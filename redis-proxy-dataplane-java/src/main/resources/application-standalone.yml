@@ -1,0 +1,35 @@
+server:
+  port: 8080
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+proxy:
+  server:
+    listen: "0.0.0.0:6379"
+    bossThreads: 1
+    workerThreads: 0
+  admin:
+    listen: "0.0.0.0:8080"
+  mode: "standalone"
+  backends:
+    clusters:
+      - name: "redis-a"
+        nodes:
+          - "127.0.0.1:63790"
+        pool:
+          connectionsPerNode: 16
+          maxInflightPerConnection: 4096
+  routing:
+    defaultCluster: "redis-a"
+    routeEpoch: 1
+  limits:
+    maxPipelineDepth: 1024
+    maxRequestBytes: 10485760
+    maxResponseBytes: 104857600

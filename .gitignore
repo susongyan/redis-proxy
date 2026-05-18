@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.pid
+*.tmp
+
+bench-results/
+tmp/
+
+**/target/
+**/build/
+**/out/
+
+redis-proxy-dataplane-go/redis-proxy-dataplane-go
+redis-proxy-dataplane-go/proxy

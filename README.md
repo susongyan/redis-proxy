@@ -1,0 +1,258 @@
+# Redis Proxy 技术方案与实现路线
+
+本项目用于设计和验证一套面向基础架构场景的 Redis Proxy。目标不是简单做透明转发，而是在数据面稳定低延迟的前提下，把 Redis 集群调度、访问治理、观测分析和研发接入规范沉淀到统一入口。
+
+当前工作区保留三套独立工程：
+
+- `redis-proxy-dataplane-go`：Go 数据面，当前作为低尾延迟和低资源开销的主验证方向。
+- `redis-proxy-dataplane-java`：Java 21 + Netty 数据面，用于和 Go 在同等能力下做尾延迟、GC、内存和吞吐对比。
+- `redis-proxy-control-plane-java`：Java 21 + Spring Boot 控制面，负责配置模型、路由策略、治理规则和后续运维编排。
+
+尾延迟实验工作区说明已独立到 [TAIL_LATENCY_COMPARISON_WORKSPACE.md](TAIL_LATENCY_COMPARISON_WORKSPACE.md)。
+
+## 设计目标
+
+核心目标：
+
+- 对业务隐藏 Redis standalone / cluster / 多集群拓扑差异。
+- 支持数据面无状态横向扩容。
+- 支持同城双活、自主切换和后续跨机房容灾编排。
+- 支持统一鉴权、namespace、限流、命令治理和审计。
+- 支持热 key、大 key、大 response、慢请求等访问特征分析。
+- 保持低 p99 / p999 尾延迟，避免代理层成为 Redis 访问瓶颈。
+- 简化研发接入，形成统一 Redis 使用规范。
+
+非目标：
+
+- 不在数据面承载复杂审批流、报表和策略编排。
+- 不在首版实现完整 Redis Server 能力治理，例如完整 Lua / MULTI / PUBSUB 语义拦截。
+- 不把热 key / 大 key 离线分析强塞进同步请求路径。
+
+## 总体架构
+
+```mermaid
+flowchart LR
+    App["业务应用"] --> Proxy["Redis Proxy 数据面"]
+    Proxy --> RedisA["Redis Cluster A"]
+    Proxy --> RedisB["Redis Cluster B"]
+    Control["Java 控制面"] --> Config["配置快照 / 路由策略 / 治理规则"]
+    Config --> Proxy
+    Proxy --> Metrics["Metrics / Tracing / Logs"]
+    Metrics --> Analysis["热 key / 大 key / 慢请求分析"]
+```
+
+数据面负责：
+
+- RESP2 请求解析和原始响应转发。
+- 连接管理、pipeline 顺序保持、backend 连接池。
+- slot 路由、MOVED / ASK 基础处理。
+- 快速限流、基础鉴权、命令治理。
+- metrics、healthz、readiness、graceful shutdown。
+
+控制面负责：
+
+- cluster / namespace / route / limits 配置建模。
+- 生成数据面本地不可变配置快照。
+- 管理 routeEpoch 和切换策略。
+- 后续扩展审批、发布、灰度、回滚和双活切换编排。
+
+## 数据面技术路线
+
+当前保留 Go 和 Java 双数据面，功能语义对齐后做同口径对比。
+
+Go 数据面：
+
+- 使用标准 `net` + goroutine 模型。
+- backend 采用异步连接池，每条 backend 连接维护 FIFO inflight 队列。
+- client response sequencer 保证 pipeline 响应顺序。
+- 当前本地 benchmark 中，Go async 在同组 async backend 对比里吞吐和 p99 都优于 Java async。
+
+Java 数据面：
+
+- 使用 Java 21 + Spring Boot + Netty。
+- Netty 负责前端 TCP 和 backend TCP，不使用 Lettuce/Jedis 进入核心链路。
+- 重点验证 direct memory、ByteBuf 生命周期、G1GC / ZGC 下尾延迟差异。
+- 当前作为 Java 技术栈下的数据面对照实现，不代表最终生产路线结论。
+
+Rust 路线：
+
+- 暂不进入首轮实现。
+- 后续如果 Go / Java 在 p999、内存占用或 CPU 利用率上无法满足目标，再评估 Rust 数据面。
+- Rust 适合极致性能和内存控制，但工程团队学习成本、生态集成和迭代效率需要单独评估。
+
+## 路由与集群调度
+
+首版路由能力：
+
+- standalone 单 Redis 转发。
+- Redis Cluster slot 计算。
+- 简化 slot 到节点映射。
+- MOVED / ASK 指标暴露。
+
+后续路线：
+
+1. 接入真实 `CLUSTER SLOTS` 拓扑刷新。
+2. 支持 routeEpoch，本地不可变路由快照。
+3. 支持按 namespace / key pattern / hash tag 路由到不同集群。
+4. 支持灰度切流、按比例切流和快速回滚。
+5. 支持同城双活场景下的主读写集群切换。
+
+同城双活建议把“决策”和“执行”分离：
+
+- 控制面负责健康判断、切换计划、审批或自动化策略。
+- 数据面只消费已发布的路由快照，按 routeEpoch 原子切换。
+- 切换期间优先保证请求路径简单、确定、可观测。
+
+## 治理能力
+
+首版预留配置字段和指标，不把复杂治理放入 MVP 热路径。
+
+后续治理能力分层：
+
+- 接入治理：namespace、应用身份、Redis 资源绑定关系。
+- 访问控制：命令黑白名单、只读 namespace、危险命令拦截。
+- 限流降级：连接数、QPS、pipeline depth、inflight、请求大小、响应大小。
+- 热 key 分析：在数据面做轻量采样和 TopK 近实时统计，重分析放异步链路。
+- 大 key / 大 response 分析：同步路径只做大小计数、阈值打点和采样，离线分析由旁路任务完成。
+- 审计：高风险命令、跨 namespace 访问、切换操作和异常流量记录。
+
+热 key 和大 key 可以在 Proxy 层做，但需要控制边界：
+
+- 可以做：采样、计数、TopK、阈值告警、按 namespace 聚合。
+- 不建议在同步路径做：全量精确统计、复杂聚合、阻塞式大 key 扫描。
+- 大 key 更准确的判断应结合 Redis 侧 `MEMORY USAGE`、离线扫描和 response size 观测。
+
+## 统一配置契约
+
+Go / Java 数据面和 Java 控制面共享同一语义配置。
+
+```yaml
+server:
+  listen: "0.0.0.0:6379"
+
+admin:
+  listen: "0.0.0.0:8080"
+
+mode: "cluster"
+
+backends:
+  clusters:
+    - name: "redis-a"
+      nodes:
+        - "127.0.0.1:7000"
+        - "127.0.0.1:7001"
+        - "127.0.0.1:7002"
+      pool:
+        connectionsPerNode: 16
+        maxInflightPerConnection: 4096
+
+routing:
+  defaultCluster: "redis-a"
+  routeEpoch: 1
+
+limits:
+  maxPipelineDepth: 1024
+  maxRequestBytes: 10485760
+  maxResponseBytes: 104857600
+```
+
+配置原则：
+
+- 启动强校验，非法配置 fail fast。
+- 数据面运行时使用本地不可变快照。
+- 控制面生成同结构配置，后续再支持动态发布。
+- 所有切换和治理规则必须可审计、可回滚。
+
+## 本地运行
+
+启动 Redis standalone：
+
+```bash
+./scripts/redis-standalone-up.sh
+```
+
+启动 Go 数据面：
+
+```bash
+./scripts/run-go-dataplane.sh standalone
+```
+
+启动 Java 数据面：
+
+```bash
+./scripts/run-java-dataplane.sh standalone g1
+./scripts/run-java-dataplane.sh standalone zgc
+```
+
+执行 smoke：
+
+```bash
+./scripts/smoke.sh
+```
+
+执行 benchmark：
+
+```bash
+REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./scripts/bench.sh
+```
+
+## 验证口径
+
+数据面正确性：
+
+- `PING` / `GET` / `SET` / `DEL`
+- pipeline 响应顺序
+- 大 value 转发
+- 连接关闭与超时
+- Redis Cluster slot 计算
+- MOVED / ASK 指标
+- healthz / readiness / metrics
+- graceful shutdown
+
+性能对比：
+
+- 相同 Redis 后端。
+- 相同 proxy 配置。
+- 相同 client workload。
+- 相同机器资源限制。
+- 相同并发连接数和 pipeline depth。
+- 区分 sync backend 和 async backend 实现模型。
+- 同时采集 RPS、p50、p95、p99、p999、CPU、RSS、GC、heap/direct memory、backend inflight 和 error rate。
+
+当前 benchmark 详情见 [TAIL_LATENCY_COMPARISON_WORKSPACE.md](TAIL_LATENCY_COMPARISON_WORKSPACE.md)。
+
+## 后续实现步骤
+
+第一阶段：工程基线收敛
+
+1. 补齐 Go / Java 数据面的单元测试和 E2E 测试。
+2. benchmark 增加直连 Redis baseline。
+3. benchmark 增加 CPU、RSS、GC、heap/direct memory 指标采集。
+4. 固化 benchmark 报告生成脚本，避免手工汇总。
+
+第二阶段：生产级路由
+
+1. 实现真实 `CLUSTER SLOTS` 拓扑刷新。
+2. 完善 MOVED / ASK 处理和 slot cache 更新。
+3. 支持 routeEpoch 原子切换。
+4. 支持灰度路由和回滚。
+
+第三阶段：治理能力
+
+1. namespace 配置和应用身份接入。
+2. 命令治理和危险命令拦截。
+3. 基于连接、QPS、pipeline、inflight、请求/响应大小的限流。
+4. 热 key 采样 TopK 和大 response 阈值告警。
+
+第四阶段：控制面平台化
+
+1. 配置生成、查询、发布和版本管理。
+2. 路由变更审计和回滚。
+3. 双活切换策略建模。
+4. 与监控告警、CMDB、发布系统集成。
+
+第五阶段：技术路线决策
+
+1. 用长时间压测和真实 workload 对比 Go / Java。
+2. 明确 p99 / p999、资源成本、运维复杂度和团队维护成本。
+3. 如仍无法满足极致性能目标，再进入 Rust PoC。
