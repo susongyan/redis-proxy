@@ -3,7 +3,8 @@ set -euo pipefail
 
 IMAGE="${REDIS_IMAGE:-redis:7}"
 NETWORK="${REDIS_CLUSTER_NETWORK:-redis-proxy-cluster}"
-NODES=(7000 7001 7002 7003 7004 7005)
+PORTS="${REDIS_CLUSTER_PORTS:-7000 7001 7002 7003 7004 7005}"
+read -r -a NODES <<< "${PORTS}"
 
 if ! docker network inspect "${NETWORK}" >/dev/null 2>&1; then
   docker network create "${NETWORK}" >/dev/null
@@ -39,4 +40,4 @@ done
 docker run --rm -i --network "${NETWORK}" "${IMAGE}" \
   redis-cli --cluster create "${cluster_nodes[@]}" --cluster-replicas 1 --cluster-yes
 
-echo "Redis Cluster is listening on 127.0.0.1:7000-7005"
+echo "Redis Cluster is listening on 127.0.0.1:${PORTS}"

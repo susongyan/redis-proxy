@@ -133,7 +133,13 @@ Redis Cluster 使用宿主机端口 `7000-7005`：
 ./scripts/redis-cluster-down.sh
 ```
 
-当前 Redis Cluster 路由实现是简化版本，适合早期 smoke 验证和指标暴露，还不是生产级 `CLUSTER SLOTS` 拓扑实现。
+如果本机 `7000-7005` 被占用，可以覆盖端口列表，并使用 Go 数据面的本地 cluster 配置：
+
+```bash
+REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-up.sh
+./scripts/run-go-dataplane.sh cluster-local
+REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down.sh
+```
 
 Go 数据面已开始升级为生产级路由：启动时读取 `CLUSTER SLOTS` 构建 slot cache，遇到 `MOVED` 响应时更新单 slot 并按需初始化 backend 连接。Java 数据面对齐和周期性拓扑刷新仍在后续阶段。
 

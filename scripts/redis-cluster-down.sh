@@ -2,7 +2,8 @@
 set -euo pipefail
 
 NETWORK="${REDIS_CLUSTER_NETWORK:-redis-proxy-cluster}"
-NODES=(7000 7001 7002 7003 7004 7005)
+PORTS="${REDIS_CLUSTER_PORTS:-7000 7001 7002 7003 7004 7005}"
+read -r -a NODES <<< "${PORTS}"
 
 for port in "${NODES[@]}"; do
   name="redis-proxy-cluster-${port}"

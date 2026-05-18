@@ -177,6 +177,20 @@ limits:
 ./scripts/run-go-dataplane.sh standalone
 ```
 
+启动 Go 数据面连接本地 Redis Cluster：
+
+```bash
+./scripts/run-go-dataplane.sh cluster
+```
+
+如果本机 `7000-7005` 端口被占用，可以使用备用端口配置：
+
+```bash
+REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-up.sh
+./scripts/run-go-dataplane.sh cluster-local
+REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down.sh
+```
+
 启动 Java 数据面：
 
 ```bash
