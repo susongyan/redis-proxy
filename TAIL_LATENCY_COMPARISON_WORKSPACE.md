@@ -202,6 +202,175 @@ REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" ./scripts/bench.s
 
 Java 数据面至少需要分别测试 G1GC 和 ZGC，再做判断。
 
+## Java 数据面深度优化路线
+
+当前阶段结论是：Java async 数据面已经明显优于 Java old sync backend，但在同属 async backend 的分组内仍落后于 Go async。Java 后续优化应继续围绕 Netty 数据链路、backpressure、JVM 内存和观测闭环推进，目标不是证明 Java 一定可胜出，而是明确 JVM/Netty 路线的性能上限和工程成本。
+
+### 优先级 P0：正确性与压测口径收敛
+
+优化前必须先保证对比口径稳定：
+
+- 保持 Go async 和 Java async 的能力边界一致。
+- 保持相同 `connectionsPerNode`、`maxInflightPerConnection`、`maxPipelineDepth`。
+- 固定 Redis 后端、压测机、请求数、连接数、pipeline depth 和 workload。
+- Java 每次压测前做 JVM warmup，避免把 JIT 冷启动混入尾延迟结论。
+- 增加直连 Redis baseline，拆出 Redis 自身延迟、网络延迟和 proxy 额外开销。
+
+必须补充采集：
+
+- JVM heap、direct memory、metaspace。
+- GC pause、GC count、allocation rate。
+- Netty event loop pending tasks。
+- Netty write buffer watermark 命中次数。
+- backend active connections、backend inflight、pending acquire。
+- client pending responses。
+- ByteBuf leak detection 结果。
+
+### 优先级 P1：Backpressure 与排队控制
+
+Java async 后 p99 偏高，首要怀疑点不是 GC，而是异步化后 inflight 增大导致排队变长。需要把“能写入”改成“在可控队列深度内写入”。
+
+建议实现：
+
+- client 级 pending response 上限。
+- backend connection 级 inflight 上限。
+- backend node 级总 inflight 上限。
+- Netty `Channel.isWritable()` 和 write buffer watermark 联动。
+- 超限时明确策略：快速失败、短暂排队、或对 client 暂停读。
+- 对 pipeline depth 100 / 1000 分别记录拒绝率和尾延迟变化。
+
+验证目标：
+
+- p99 / p999 不随 pipeline depth 线性恶化。
+- backend inflight 达到阈值后 error rate 可解释。
+- event loop pending tasks 不持续累积。
+
+### 优先级 P1：Backend 连接选择策略
+
+当前 Java async backend 可以继续优化连接选择。简单轮询或局部 least-inflight 在高并发下可能造成连接热点和 event loop 排队。
+
+建议实现：
+
+- least-inflight per backend node。
+- event-loop aware 的连接选择，避免跨 event loop 频繁调度。
+- 对同一 client 或同一 key hash tag 保持 backend connection affinity，避免破坏 pipeline 中具有顺序依赖的命令语义。
+- backend channel 不可写时从候选集合剔除。
+- 记录每条 backend connection 的 inflight、write queue、latency histogram。
+
+验证目标：
+
+- 每条 backend connection 的 inflight 分布更均匀。
+- 高 pipeline 下最差 p99 下降。
+- 不引入 pipeline 响应乱序或 Redis 执行顺序问题。
+
+### 优先级 P1：Netty 线程模型与 event loop 隔离
+
+Java 当前链路同时包含 Spring Boot admin、Micrometer、前端 Netty、后端 Netty。需要避免管理面和数据面互相干扰。
+
+建议实现：
+
+- 前端 boss / worker event loop 与后端 event loop 分离。
+- admin HTTP 与 proxy TCP 完全隔离线程池。
+- 固定 event loop 线程数并纳入 benchmark 元数据。
+- 尝试 native transport：
+  - Linux：epoll。
+  - macOS：kqueue。
+- 避免在 event loop 中执行复杂 metrics 标签构造、字符串解析或日志输出。
+
+验证目标：
+
+- event loop pending tasks 稳定。
+- CPU 利用率更均匀。
+- p99 / p999 对 admin metrics scrape 不敏感。
+
+### 优先级 P2：ByteBuf 与拷贝优化
+
+当前 Java 数据面已经避免使用 Lettuce/Jedis，但仍需要继续压低 ByteBuf retain/release 成本和中间对象。
+
+建议实现：
+
+- 请求转发优先使用 `retainedDuplicate()`，避免 `byte[]` 中间复制。
+- 响应从 backend decoder 到 client write 尽量保持 `ByteBuf` 透传。
+- 对错误响应使用预构造常量 buffer 或轻量复用策略。
+- 减少命令名解析时的字符串创建，热点命令可用 ASCII byte compare。
+- 对 MOVED / ASK 检测继续使用 ByteBuf prefix compare，避免整帧转字符串。
+- benchmark 时开启 Netty leak detection 的 sampled 模式；专项测试时开启 paranoid 模式。
+
+验证目标：
+
+- allocation rate 下降。
+- young GC 次数下降。
+- direct memory 稳定，无 ByteBuf leak。
+
+### 优先级 P2：Flush 策略与批量写
+
+当前每个响应 `writeAndFlush` 会带来更多 syscall 和 event loop 压力。pipeline 场景可以引入批量 flush。
+
+建议实现：
+
+- 在 client response sequencer 中使用 `write` 聚合多个连续响应。
+- 在同一 event loop tick 末尾统一 `flush`。
+- 对 pipeline depth 较大场景使用 configurable batch size。
+- 结合 write buffer watermark 控制 batch，不让低延迟小请求被大 pipeline 长时间压住。
+
+验证目标：
+
+- pipeline 10 / 100 下 RPS 提升。
+- p99 不因 batch 等待明显变差。
+- syscall 和 event loop pending tasks 下降。
+
+### 优先级 P2：JVM 与 GC 参数矩阵
+
+当前短压测中 G1 async 优于 ZGC async，但这个结论不能直接外推。需要用更完整参数矩阵验证。
+
+建议测试：
+
+- Java 21 + G1GC：
+  - 固定 `-Xms` / `-Xmx`。
+  - 调整 `MaxGCPauseMillis`。
+  - 观察 young GC 与 mixed GC 对 p99/p999 的影响。
+- Java 21 + ZGC：
+  - 固定 heap。
+  - 观察低暂停是否能抵消吞吐损失。
+  - 关注 allocation rate 高时的 CPU 成本。
+- Direct memory：
+  - 设置 `-XX:MaxDirectMemorySize`。
+  - 配合 Netty allocator metrics 观察 direct arena 使用。
+
+验证目标：
+
+- 用同一 workload 输出 G1 / ZGC 的 p99、p999、CPU、heap、direct memory、GC pause。
+- 判断 Java 尾延迟瓶颈是 GC、event loop、direct memory、还是排队。
+
+### 优先级 P3：协议解析专项优化
+
+如果 P1/P2 后 Java 仍明显落后，再进入 parser 级优化。
+
+建议实现：
+
+- JMH benchmark 覆盖 RESP request decoder 和 response frame decoder。
+- 使用 byte-level parser，减少边界检查和对象创建。
+- 针对常见命令 `GET`、`SET`、`DEL`、`MGET` 做轻量 fast path。
+- 解析只提取路由所需 key 和 command，不构造完整对象树。
+
+验证目标：
+
+- parser allocation 接近零。
+- 小 value、高 QPS 场景 CPU 降低。
+- 不影响大 value 和 nested array 的正确性。
+
+### Java 优化后的重新判定标准
+
+Java 深度优化完成后，再和 Go async 重新对比。建议至少满足以下条件后再调整技术路线判断：
+
+- 同一 workload 下 Java async 平均 RPS 接近或超过 Go async 的 `80%`。
+- Java async 平均 p99 不超过 Go async 的 `150%`。
+- p999 在长时间压测中没有明显尖刺。
+- direct memory 无泄漏，GC pause 可解释。
+- 实现复杂度、排障成本和团队维护成本可接受。
+
+如果达不到这些条件，Java 数据面继续作为对照实现和技术储备，主路线保持 Go 数据面 + Java 控制面。
+
 ## 后续建议
 
 1. 为 Java async backend 增加更严格的 backpressure：client pending response、backend inflight、write buffer watermark 都需要参与限流。
