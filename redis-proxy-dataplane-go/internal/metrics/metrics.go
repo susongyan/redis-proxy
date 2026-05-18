@@ -30,6 +30,19 @@ func NewRegistry() *Registry {
 	r.ClientPending = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_client_pending_responses", Help: "Pending client responses"})
 	r.Moved = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_moved_total", Help: "MOVED responses"})
 	r.Ask = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_ask_total", Help: "ASK responses"})
-	r.Prom.MustRegister(r.Requests, r.Errors, r.Latency, r.BackendLatency, r.ActiveConns, r.BackendConns, r.BackendInflight, r.ClientPending, r.Moved, r.Ask)
+	r.Prom.MustRegister(
+		prometheus.NewGoCollector(),
+		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
+		r.Requests,
+		r.Errors,
+		r.Latency,
+		r.BackendLatency,
+		r.ActiveConns,
+		r.BackendConns,
+		r.BackendInflight,
+		r.ClientPending,
+		r.Moved,
+		r.Ask,
+	)
 	return r
 }

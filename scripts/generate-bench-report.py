@@ -67,11 +67,19 @@ def parse_resource_summary(path: pathlib.Path) -> dict[str, str]:
     max_rss = nums("max_rss_kb")
     max_threads = nums("max_threads")
     gc_max_pause = nums("gc_max_pause_ms")
+    go_heap = nums("max_go_heap_bytes")
+    go_goroutines = nums("max_go_goroutines")
+    jvm_heap = nums("max_jvm_heap_bytes")
+    jvm_direct = nums("max_jvm_direct_bytes")
     return {
         "avg_cpu_percent": f"{(sum(avg_cpu) / len(avg_cpu)):.2f}" if avg_cpu else "n/a",
         "max_rss_mb": f"{(max(max_rss) / 1024):.2f}" if max_rss else "n/a",
         "max_threads": f"{max(max_threads):.0f}" if max_threads else "n/a",
         "gc_max_pause_ms": f"{max(gc_max_pause):.3f}" if gc_max_pause else "n/a",
+        "max_go_heap_mb": f"{(max(go_heap) / 1024 / 1024):.2f}" if go_heap and max(go_heap) > 0 else "n/a",
+        "max_go_goroutines": f"{max(go_goroutines):.0f}" if go_goroutines and max(go_goroutines) > 0 else "n/a",
+        "max_jvm_heap_mb": f"{(max(jvm_heap) / 1024 / 1024):.2f}" if jvm_heap and max(jvm_heap) > 0 else "n/a",
+        "max_jvm_direct_mb": f"{(max(jvm_direct) / 1024 / 1024):.2f}" if jvm_direct and max(jvm_direct) > 0 else "n/a",
     }
 
 
@@ -136,8 +144,8 @@ def main() -> int:
         report.write(f"# {args.title}\n\n")
         report.write(f"Generated at: {dt.datetime.now().isoformat(timespec='seconds')}\n\n")
         report.write("## Aggregate Results\n\n")
-        report.write("| Group | Run | Profile | Backend model | Dataplane | Avg RPS | Avg p99 ms | Best RPS | Worst p99 ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms |\n")
-        report.write("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        report.write("| Group | Run | Profile | Backend model | Dataplane | Avg RPS | Avg p99 ms | Best RPS | Worst p99 ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms | Go Heap MB | Go Goroutines | JVM Heap MB | JVM Direct MB |\n")
+        report.write("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
         for name, _path, metadata, summary, resources in summaries:
             report.write(
                 f"| {metadata.get('run_group', 'unspecified')} "
@@ -152,7 +160,11 @@ def main() -> int:
                 f"| {resources.get('avg_cpu_percent', 'n/a')} "
                 f"| {resources.get('max_rss_mb', 'n/a')} "
                 f"| {resources.get('max_threads', 'n/a')} "
-                f"| {resources.get('gc_max_pause_ms', 'n/a')} |\n"
+                f"| {resources.get('gc_max_pause_ms', 'n/a')} "
+                f"| {resources.get('max_go_heap_mb', 'n/a')} "
+                f"| {resources.get('max_go_goroutines', 'n/a')} "
+                f"| {resources.get('max_jvm_heap_mb', 'n/a')} "
+                f"| {resources.get('max_jvm_direct_mb', 'n/a')} |\n"
             )
 
         report.write("\n## Scenario Comparison\n\n")

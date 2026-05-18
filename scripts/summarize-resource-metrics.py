@@ -7,6 +7,7 @@ import statistics
 
 
 GC_PAUSE_RE = re.compile(r"Pause[^\n]*?([0-9]+(?:\.[0-9]+)?)ms")
+METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$")
 
 
 def summarize_resource_file(path: pathlib.Path) -> dict[str, object] | None:
@@ -56,14 +57,51 @@ def summarize_gc_logs(result_dir: pathlib.Path) -> dict[str, float]:
     }
 
 
+def summarize_metrics_snapshots(result_dir: pathlib.Path) -> dict[str, float]:
+    max_go_heap = 0.0
+    max_go_goroutines = 0.0
+    max_jvm_heap = 0.0
+    max_jvm_direct = 0.0
+    for path in sorted(result_dir.glob("metrics-after-*.prom")):
+        jvm_heap = 0.0
+        jvm_direct = 0.0
+        for line in path.read_text(errors="ignore").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            match = METRIC_RE.match(line)
+            if not match:
+                continue
+            name, labels, raw_value = match.groups()
+            value = float(raw_value)
+            labels = labels or ""
+            if name == "go_memstats_heap_alloc_bytes":
+                max_go_heap = max(max_go_heap, value)
+            elif name == "go_goroutines":
+                max_go_goroutines = max(max_go_goroutines, value)
+            elif name == "jvm_memory_used_bytes" and 'area="heap"' in labels:
+                jvm_heap += value
+            elif name == "jvm_buffer_memory_used_bytes" and ('id="direct"' in labels or 'pool="direct"' in labels):
+                jvm_direct += value
+        max_jvm_heap = max(max_jvm_heap, jvm_heap)
+        max_jvm_direct = max(max_jvm_direct, jvm_direct)
+    return {
+        "max_go_heap_bytes": max_go_heap,
+        "max_go_goroutines": max_go_goroutines,
+        "max_jvm_heap_bytes": max_jvm_heap,
+        "max_jvm_direct_bytes": max_jvm_direct,
+    }
+
+
 def write_summary(result_dir: pathlib.Path) -> pathlib.Path:
     rows = []
     gc = summarize_gc_logs(result_dir)
+    metrics = summarize_metrics_snapshots(result_dir)
     for path in sorted(result_dir.glob("resource-c*-p*.csv")):
         summary = summarize_resource_file(path)
         if summary is None:
             continue
         summary.update(gc)
+        summary.update(metrics)
         rows.append(summary)
 
     output = result_dir / "resource-summary.csv"
@@ -83,6 +121,10 @@ def write_summary(result_dir: pathlib.Path) -> pathlib.Path:
         "gc_pause_count",
         "gc_max_pause_ms",
         "gc_total_pause_ms",
+        "max_go_heap_bytes",
+        "max_go_goroutines",
+        "max_jvm_heap_bytes",
+        "max_jvm_direct_bytes",
     ]
     with output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)

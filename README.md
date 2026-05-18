@@ -287,10 +287,11 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 4. benchmark 结果报告生成脚本：`scripts/generate-bench-report.py`。
 5. benchmark 基础资源采集：CPU、RSS、线程数、admin metrics 快照、Java GC log 摘要。
 6. benchmark profile 脚本：`smoke`、`baseline`、`long`。
+7. Go runtime metrics：heap、goroutine、process collector，并进入 benchmark 报告。
 
 待完成：
 
-1. benchmark 增加 heap/direct memory 深度指标采集。
+1. Java Netty direct memory 深度指标校准和验证。
 2. 增加 p999 采集能力；当前 Redis 官方 `redis-benchmark --csv` 只直接输出 p99。
 3. 固化生产级 benchmark 报告模板和长稳结论口径。
 

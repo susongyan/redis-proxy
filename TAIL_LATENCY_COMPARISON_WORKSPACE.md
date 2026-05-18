@@ -220,6 +220,12 @@ REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" \
 - `metrics-before-*.prom` / `metrics-after-*.prom`：case 前后的 admin metrics 快照。
 - `gc-*.log`：可选 Java GC log 复制件。
 
+报告生成器会从 metrics 快照中提取：
+
+- Go：`go_memstats_heap_alloc_bytes`、`go_goroutines`。
+- Java：`jvm_memory_used_bytes{area="heap"}`、`jvm_buffer_memory_used_bytes{id="direct"}`。
+- 缺失指标显示为 `n/a`，兼容历史结果。
+
 执行直连 Redis baseline：
 
 ```bash
