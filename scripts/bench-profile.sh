@@ -13,6 +13,7 @@ case "${PROFILE}" in
     export PIPELINE_LIST="${PIPELINE_LIST:-1}"
     export TESTS="${TESTS:-set,get}"
     export RESOURCE_SAMPLE_INTERVAL_SECONDS="${RESOURCE_SAMPLE_INTERVAL_SECONDS:-1}"
+    export CAPTURE_LATENCY_DISTRIBUTION="${CAPTURE_LATENCY_DISTRIBUTION:-0}"
     ;;
   baseline)
     export REQUESTS="${REQUESTS:-20000}"
@@ -20,6 +21,7 @@ case "${PROFILE}" in
     export PIPELINE_LIST="${PIPELINE_LIST:-1 10 100}"
     export TESTS="${TESTS:-set,get}"
     export RESOURCE_SAMPLE_INTERVAL_SECONDS="${RESOURCE_SAMPLE_INTERVAL_SECONDS:-1}"
+    export CAPTURE_LATENCY_DISTRIBUTION="${CAPTURE_LATENCY_DISTRIBUTION:-0}"
     ;;
   long)
     export REQUESTS="${REQUESTS:-1000000}"
@@ -27,6 +29,7 @@ case "${PROFILE}" in
     export PIPELINE_LIST="${PIPELINE_LIST:-1 10 100}"
     export TESTS="${TESTS:-set,get}"
     export RESOURCE_SAMPLE_INTERVAL_SECONDS="${RESOURCE_SAMPLE_INTERVAL_SECONDS:-5}"
+    export CAPTURE_LATENCY_DISTRIBUTION="${CAPTURE_LATENCY_DISTRIBUTION:-1}"
     ;;
   *)
     echo "Unknown profile '${PROFILE}'. Expected smoke, baseline, or long." >&2

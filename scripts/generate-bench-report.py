@@ -83,6 +83,28 @@ def parse_resource_summary(path: pathlib.Path) -> dict[str, str]:
     }
 
 
+def parse_latency_summary(path: pathlib.Path) -> dict[str, str]:
+    summary = path / "latency-summary.csv"
+    if not summary.exists():
+        return {}
+    p999 = []
+    max_latency = []
+    with summary.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                if row.get("p999_latency_ms"):
+                    p999.append(float(row["p999_latency_ms"]))
+                if row.get("max_latency_ms"):
+                    max_latency.append(float(row["max_latency_ms"]))
+            except ValueError:
+                continue
+    return {
+        "avg_p999_ms": f"{(sum(p999) / len(p999)):.3f}" if p999 else "n/a",
+        "worst_p999_ms": f"{max(p999):.3f}" if p999 else "n/a",
+        "max_latency_ms": f"{max(max_latency):.3f}" if max_latency else "n/a",
+    }
+
+
 def default_run_name(path: pathlib.Path, metadata: dict[str, str]) -> str:
     return metadata.get("run_name") or path.name
 
@@ -111,7 +133,7 @@ def main() -> int:
     parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
 
-    runs: list[tuple[pathlib.Path, dict[str, str], list[dict[str, object]], dict[str, str]]] = []
+    runs: list[tuple[pathlib.Path, dict[str, str], list[dict[str, object]], dict[str, str], dict[str, str]]] = []
     for path in args.result_dirs:
         if not path.exists():
             print(f"missing result dir: {path}", file=sys.stderr)
@@ -120,7 +142,7 @@ def main() -> int:
         if not rows:
             print(f"no redis-benchmark csv files found in: {path}", file=sys.stderr)
             return 2
-        runs.append((path, metadata, rows, parse_resource_summary(path)))
+        runs.append((path, metadata, rows, parse_resource_summary(path), parse_latency_summary(path)))
 
     output = args.output
     if output is None:
@@ -130,23 +152,23 @@ def main() -> int:
 
     key_set = set()
     lookup: dict[str, dict[tuple[int, int, str], dict[str, object]]] = {}
-    summaries: list[tuple[str, pathlib.Path, dict[str, str], dict[str, float], dict[str, str]]] = []
-    for path, metadata, rows, resources in runs:
+    summaries: list[tuple[str, pathlib.Path, dict[str, str], dict[str, float], dict[str, str], dict[str, str]]] = []
+    for path, metadata, rows, resources, latency in runs:
         name = default_run_name(path, metadata)
         lookup[name] = {}
         for row in rows:
             key = (int(row["clients"]), int(row["pipeline"]), str(row["test"]))
             lookup[name][key] = row
             key_set.add(key)
-        summaries.append((name, path, metadata, summarize(rows), resources))
+        summaries.append((name, path, metadata, summarize(rows), resources, latency))
 
     with output.open("w") as report:
         report.write(f"# {args.title}\n\n")
         report.write(f"Generated at: {dt.datetime.now().isoformat(timespec='seconds')}\n\n")
         report.write("## Aggregate Results\n\n")
-        report.write("| Group | Run | Profile | Backend model | Dataplane | Avg RPS | Avg p99 ms | Best RPS | Worst p99 ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms | Go Heap MB | Go Goroutines | JVM Heap MB | JVM Direct MB |\n")
-        report.write("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
-        for name, _path, metadata, summary, resources in summaries:
+        report.write("| Group | Run | Profile | Backend model | Dataplane | Avg RPS | Avg p99 ms | Avg p999 ms | Best RPS | Worst p99 ms | Worst p999 ms | Max latency ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms | Go Heap MB | Go Goroutines | JVM Heap MB | JVM Direct MB |\n")
+        report.write("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        for name, _path, metadata, summary, resources, latency in summaries:
             report.write(
                 f"| {metadata.get('run_group', 'unspecified')} "
                 f"| {name} "
@@ -155,8 +177,11 @@ def main() -> int:
                 f"| {metadata.get('dataplane', 'unspecified')} "
                 f"| {summary['avg_rps']:.2f} "
                 f"| {summary['avg_p99']:.2f} "
+                f"| {latency.get('avg_p999_ms', 'n/a')} "
                 f"| {summary['best_rps']:.2f} "
                 f"| {summary['worst_p99']:.2f} "
+                f"| {latency.get('worst_p999_ms', 'n/a')} "
+                f"| {latency.get('max_latency_ms', 'n/a')} "
                 f"| {resources.get('avg_cpu_percent', 'n/a')} "
                 f"| {resources.get('max_rss_mb', 'n/a')} "
                 f"| {resources.get('max_threads', 'n/a')} "
@@ -168,7 +193,7 @@ def main() -> int:
             )
 
         report.write("\n## Scenario Comparison\n\n")
-        run_names = [name for name, _path, _metadata, _summary, _resources in summaries]
+        run_names = [name for name, _path, _metadata, _summary, _resources, _latency in summaries]
         rps_headers = " | ".join(f"{name} RPS" for name in run_names)
         p99_headers = " | ".join(f"{name} p99" for name in run_names)
         report.write(f"| Clients | Pipeline | Test | {rps_headers} | {p99_headers} | Throughput Winner | p99 Winner |\n")
@@ -186,7 +211,7 @@ def main() -> int:
             )
 
         report.write("\n## Source Results\n\n")
-        for name, path, _metadata, _summary, _resources in summaries:
+        for name, path, _metadata, _summary, _resources, _latency in summaries:
             report.write(f"- {name}: `{path}`\n")
 
     print(output)

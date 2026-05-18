@@ -181,7 +181,7 @@ profile 语义：
 
 - `smoke`：1000 请求，10 连接，pipeline 1，用于快速验证脚本和资源采集。
 - `baseline`：20000 请求，50/200 连接，pipeline 1/10/100，用于本地工程基线。
-- `long`：1000000 请求，50/200 连接，pipeline 1/10/100，用于长稳 p99 观察。
+- `long`：1000000 请求，50/200 连接，pipeline 1/10/100，用于长稳 p99/p999 观察。
 - `redis-direct` target 会直接压测 `63790` 端口的 standalone Redis。
 
 常用 benchmark 参数：
@@ -217,6 +217,8 @@ REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" \
 
 - `resource-c{clients}-p{pipeline}.csv`：每个 benchmark case 的 CPU/RSS/线程采样。
 - `resource-summary.csv`：每个 case 的资源汇总。
+- `latency-distribution-c{clients}-p{pipeline}.txt`：可选的 Redis benchmark 延迟分布原始输出。
+- `latency-summary.csv`：从延迟分布中提取的 p999 近似值和 max latency。
 - `metrics-before-*.prom` / `metrics-after-*.prom`：case 前后的 admin metrics 快照。
 - `gc-*.log`：可选 Java GC log 复制件。
 
@@ -246,7 +248,7 @@ REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" ./scripts/bench-d
 
 `bench.sh` 会在 `metadata.txt` 中写入 `run_name`、`run_group`、`backend_model`、`dataplane`、`bench_profile`、`value_size` 等字段。旧的历史结果没有这些字段，报告生成器会自动按目录名回退。
 
-当前 Redis 官方 `redis-benchmark --csv` 直接输出 p50 / p95 / p99，不直接输出 p999。长稳 profile 先用于观察长时间 p99、资源曲线和错误率；p999 需要后续引入更细粒度延迟采集工具或解析非 CSV 延迟分布。
+当前 Redis 官方 `redis-benchmark --csv` 直接输出 p50 / p95 / p99，不直接输出 p999。`long` profile 会额外采集非 CSV percentile distribution，并取第一个大于等于 `99.9%` 的桶作为 p999 近似值。这个值适合工程趋势对比，最终生产级结论仍建议引入更精确的延迟采集工具。
 
 ## 对比口径
 

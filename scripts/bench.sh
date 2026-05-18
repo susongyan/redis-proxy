@@ -22,6 +22,7 @@ TESTS="${TESTS:-set,get}"
 VALUE_SIZE="${VALUE_SIZE:-3}"
 KEYSPACE_LEN="${KEYSPACE_LEN:-}"
 BENCHMARK_THREADS="${BENCHMARK_THREADS:-}"
+CAPTURE_LATENCY_DISTRIBUTION="${CAPTURE_LATENCY_DISTRIBUTION:-0}"
 
 mkdir -p "${RESULT_DIR}"
 
@@ -46,6 +47,7 @@ tests=${TESTS}
 value_size=${VALUE_SIZE}
 keyspace_len=${KEYSPACE_LEN}
 benchmark_threads=${BENCHMARK_THREADS}
+capture_latency_distribution=${CAPTURE_LATENCY_DISTRIBUTION}
 EOF_META
 
 sample_resources() {
@@ -106,11 +108,23 @@ for clients in ${CLIENTS_LIST}; do
       -t "${TESTS}"
       --csv
     )
+    latency_args=(
+      -h "${PROXY_HOST}"
+      -p "${PROXY_PORT}"
+      -n "${REQUESTS}"
+      -c "${clients}"
+      -P "${pipeline}"
+      -d "${VALUE_SIZE}"
+      -t "${TESTS}"
+      --precision 3
+    )
     if [[ -n "${KEYSPACE_LEN}" ]]; then
       benchmark_args+=(-r "${KEYSPACE_LEN}")
+      latency_args+=(-r "${KEYSPACE_LEN}")
     fi
     if [[ -n "${BENCHMARK_THREADS}" ]]; then
       benchmark_args+=(--threads "${BENCHMARK_THREADS}")
+      latency_args+=(--threads "${BENCHMARK_THREADS}")
     fi
     set +e
     docker run --rm "${IMAGE}" redis-benchmark "${benchmark_args[@]}" | tee "${output}"
@@ -124,6 +138,11 @@ for clients in ${CLIENTS_LIST}; do
     if [[ "${benchmark_status}" -ne 0 ]]; then
       exit "${benchmark_status}"
     fi
+    if [[ "${CAPTURE_LATENCY_DISTRIBUTION}" == "1" ]]; then
+      latency_output="${RESULT_DIR}/latency-distribution-c${clients}-p${pipeline}.txt"
+      echo "Capturing latency distribution clients=${clients} pipeline=${pipeline}"
+      docker run --rm "${IMAGE}" redis-benchmark "${latency_args[@]}" > "${latency_output}"
+    fi
   done
 done
 
@@ -132,5 +151,6 @@ if [[ -n "${BENCH_JAVA_GC_LOG}" && -f "${BENCH_JAVA_GC_LOG}" ]]; then
 fi
 
 python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/summarize-resource-metrics.py" "${RESULT_DIR}" >/dev/null
+python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/summarize-latency-distribution.py" "${RESULT_DIR}" >/dev/null
 
 echo "Benchmark results written to ${RESULT_DIR}"

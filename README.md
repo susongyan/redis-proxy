@@ -209,7 +209,7 @@ profile 语义：
 
 - `smoke`：1000 请求，10 连接，pipeline 1，用于快速验证脚本和资源采集。
 - `baseline`：20000 请求，50/200 连接，pipeline 1/10/100，用于本地工程基线。
-- `long`：1000000 请求，50/200 连接，pipeline 1/10/100，用于长稳 p99 观察。
+- `long`：1000000 请求，50/200 连接，pipeline 1/10/100，用于长稳 p99/p999 观察。
 
 执行带资源采集的 benchmark：
 
@@ -288,12 +288,12 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 5. benchmark 基础资源采集：CPU、RSS、线程数、admin metrics 快照、Java GC log 摘要。
 6. benchmark profile 脚本：`smoke`、`baseline`、`long`。
 7. Go runtime metrics：heap、goroutine、process collector，并进入 benchmark 报告。
+8. p999 近似采集：long profile 会额外采集 Redis benchmark percentile distribution，并取第一个大于等于 99.9% 的桶。
 
 待完成：
 
 1. Java Netty direct memory 深度指标校准和验证。
-2. 增加 p999 采集能力；当前 Redis 官方 `redis-benchmark --csv` 只直接输出 p99。
-3. 固化生产级 benchmark 报告模板和长稳结论口径。
+2. 固化生产级 benchmark 报告模板和长稳结论口径。
 
 第二阶段：生产级路由
 
