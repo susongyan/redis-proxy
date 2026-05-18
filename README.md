@@ -196,6 +196,26 @@ limits:
 REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./scripts/bench.sh
 ```
 
+执行带资源采集的 benchmark：
+
+```bash
+BENCH_TARGET_PID=<proxy-pid> \
+BENCH_TARGET_LABEL=go-async \
+BENCH_ADMIN_URL=http://127.0.0.1:8080 \
+REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" \
+./scripts/bench.sh
+```
+
+Java 数据面可以额外带上 GC log：
+
+```bash
+BENCH_TARGET_PID=<java-pid> \
+BENCH_TARGET_LABEL=java-g1-async \
+BENCH_ADMIN_URL=http://127.0.0.1:8080 \
+BENCH_JAVA_GC_LOG=redis-proxy-dataplane-java/target/gc-g1.log \
+./scripts/bench.sh
+```
+
 执行直连 Redis baseline：
 
 ```bash
@@ -250,10 +270,11 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 2. Go async / Java async 同组 benchmark 基线。
 3. 直连 Redis baseline 脚本入口：`scripts/bench-direct-redis.sh`。
 4. benchmark 结果报告生成脚本：`scripts/generate-bench-report.py`。
+5. benchmark 基础资源采集：CPU、RSS、线程数、admin metrics 快照、Java GC log 摘要。
 
 待完成：
 
-1. benchmark 增加 CPU、RSS、GC、heap/direct memory 指标采集。
+1. benchmark 增加 heap/direct memory 深度指标采集。
 2. 增加长时间 p99 / p999 压测配置。
 3. 固化 benchmark 报告目录命名和元数据规范。
 

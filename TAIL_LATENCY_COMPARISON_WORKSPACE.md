@@ -176,6 +176,34 @@ REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" ./scripts/bench.s
 
 结果会写入 `bench-results/`。
 
+执行带资源采集的 benchmark：
+
+```bash
+BENCH_TARGET_PID=<proxy-pid> \
+BENCH_TARGET_LABEL=go-async \
+BENCH_ADMIN_URL=http://127.0.0.1:8080 \
+REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" \
+./scripts/bench.sh
+```
+
+Java 数据面可以额外采集 GC log 摘要：
+
+```bash
+BENCH_TARGET_PID=<java-pid> \
+BENCH_TARGET_LABEL=java-g1-async \
+BENCH_ADMIN_URL=http://127.0.0.1:8080 \
+BENCH_JAVA_GC_LOG=redis-proxy-dataplane-java/target/gc-g1.log \
+REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" \
+./scripts/bench.sh
+```
+
+资源采集产物：
+
+- `resource-c{clients}-p{pipeline}.csv`：每个 benchmark case 的 CPU/RSS/线程采样。
+- `resource-summary.csv`：每个 case 的资源汇总。
+- `metrics-before-*.prom` / `metrics-after-*.prom`：case 前后的 admin metrics 快照。
+- `gc-*.log`：可选 Java GC log 复制件。
+
 执行直连 Redis baseline：
 
 ```bash
