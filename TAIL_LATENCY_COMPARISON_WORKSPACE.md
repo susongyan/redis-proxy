@@ -176,6 +176,26 @@ REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" ./scripts/bench.s
 
 结果会写入 `bench-results/`。
 
+执行直连 Redis baseline：
+
+```bash
+REQUESTS=200000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" ./scripts/bench-direct-redis.sh
+```
+
+生成 benchmark 对比报告：
+
+```bash
+./scripts/generate-bench-report.py \
+  --title "Redis Proxy Async Backend Comparison" \
+  --output bench-results/comparison-$(date +%Y%m%d-%H%M%S).md \
+  bench-results/redis-direct-standalone-xxx \
+  bench-results/go-async-standalone-xxx \
+  bench-results/java-g1-async-standalone-xxx \
+  bench-results/java-zgc-async-standalone-xxx
+```
+
+`bench.sh` 会在 `metadata.txt` 中写入 `run_name`、`run_group`、`backend_model`、`dataplane` 等字段。旧的历史结果没有这些字段，报告生成器会自动按目录名回退。
+
 ## 对比口径
 
 对比 Go / Java G1 / Java ZGC 时，需要尽量保持以下条件一致：

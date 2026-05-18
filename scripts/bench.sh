@@ -5,6 +5,10 @@ PROXY_HOST="${PROXY_HOST:-host.docker.internal}"
 PROXY_PORT="${PROXY_PORT:-6379}"
 IMAGE="${REDIS_IMAGE:-redis:7}"
 RESULT_DIR="${RESULT_DIR:-bench-results/$(date +%Y%m%d-%H%M%S)}"
+RUN_NAME="${RUN_NAME:-$(basename "${RESULT_DIR}")}"
+RUN_GROUP="${RUN_GROUP:-unspecified}"
+BACKEND_MODEL="${BACKEND_MODEL:-unspecified}"
+DATAPLANE="${DATAPLANE:-unspecified}"
 REQUESTS="${REQUESTS:-100000}"
 CLIENTS_LIST="${CLIENTS_LIST:-50 200}"
 PIPELINE_LIST="${PIPELINE_LIST:-1 10 100}"
@@ -14,6 +18,10 @@ mkdir -p "${RESULT_DIR}"
 
 cat > "${RESULT_DIR}/metadata.txt" <<EOF_META
 timestamp=$(date -Iseconds)
+run_name=${RUN_NAME}
+run_group=${RUN_GROUP}
+backend_model=${BACKEND_MODEL}
+dataplane=${DATAPLANE}
 proxy_host=${PROXY_HOST}
 proxy_port=${PROXY_PORT}
 requests=${REQUESTS}

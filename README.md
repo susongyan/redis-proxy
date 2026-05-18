@@ -196,6 +196,23 @@ limits:
 REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./scripts/bench.sh
 ```
 
+执行直连 Redis baseline：
+
+```bash
+REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./scripts/bench-direct-redis.sh
+```
+
+从多个 benchmark 结果目录生成 Markdown 对比报告：
+
+```bash
+./scripts/generate-bench-report.py \
+  --title "Redis Proxy Async Backend Comparison" \
+  --output bench-results/comparison-$(date +%Y%m%d-%H%M%S).md \
+  bench-results/redis-direct-standalone-xxx \
+  bench-results/go-async-standalone-xxx \
+  bench-results/java-g1-async-standalone-xxx
+```
+
 ## 验证口径
 
 数据面正确性：
@@ -225,10 +242,20 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 
 第一阶段：工程基线收敛
 
-1. 补齐 Go / Java 数据面的单元测试和 E2E 测试。
-2. benchmark 增加直连 Redis baseline。
-3. benchmark 增加 CPU、RSS、GC、heap/direct memory 指标采集。
-4. 固化 benchmark 报告生成脚本，避免手工汇总。
+状态：进行中。
+
+已完成：
+
+1. Go / Java 数据面的基础单元测试和 smoke 脚本。
+2. Go async / Java async 同组 benchmark 基线。
+3. 直连 Redis baseline 脚本入口：`scripts/bench-direct-redis.sh`。
+4. benchmark 结果报告生成脚本：`scripts/generate-bench-report.py`。
+
+待完成：
+
+1. benchmark 增加 CPU、RSS、GC、heap/direct memory 指标采集。
+2. 增加长时间 p99 / p999 压测配置。
+3. 固化 benchmark 报告目录命名和元数据规范。
 
 第二阶段：生产级路由
 
