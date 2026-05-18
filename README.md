@@ -196,6 +196,21 @@ limits:
 REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./scripts/bench.sh
 ```
 
+使用固定 benchmark profile：
+
+```bash
+./scripts/bench-profile.sh smoke proxy
+./scripts/bench-profile.sh baseline proxy
+./scripts/bench-profile.sh long proxy
+./scripts/bench-profile.sh baseline redis-direct
+```
+
+profile 语义：
+
+- `smoke`：1000 请求，10 连接，pipeline 1，用于快速验证脚本和资源采集。
+- `baseline`：20000 请求，50/200 连接，pipeline 1/10/100，用于本地工程基线。
+- `long`：1000000 请求，50/200 连接，pipeline 1/10/100，用于长稳 p99 观察。
+
 执行带资源采集的 benchmark：
 
 ```bash
@@ -271,12 +286,13 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 3. 直连 Redis baseline 脚本入口：`scripts/bench-direct-redis.sh`。
 4. benchmark 结果报告生成脚本：`scripts/generate-bench-report.py`。
 5. benchmark 基础资源采集：CPU、RSS、线程数、admin metrics 快照、Java GC log 摘要。
+6. benchmark profile 脚本：`smoke`、`baseline`、`long`。
 
 待完成：
 
 1. benchmark 增加 heap/direct memory 深度指标采集。
-2. 增加长时间 p99 / p999 压测配置。
-3. 固化 benchmark 报告目录命名和元数据规范。
+2. 增加 p999 采集能力；当前 Redis 官方 `redis-benchmark --csv` 只直接输出 p99。
+3. 固化生产级 benchmark 报告模板和长稳结论口径。
 
 第二阶段：生产级路由
 

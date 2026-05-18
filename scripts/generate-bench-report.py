@@ -136,12 +136,13 @@ def main() -> int:
         report.write(f"# {args.title}\n\n")
         report.write(f"Generated at: {dt.datetime.now().isoformat(timespec='seconds')}\n\n")
         report.write("## Aggregate Results\n\n")
-        report.write("| Group | Run | Backend model | Dataplane | Avg RPS | Avg p99 ms | Best RPS | Worst p99 ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms |\n")
-        report.write("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        report.write("| Group | Run | Profile | Backend model | Dataplane | Avg RPS | Avg p99 ms | Best RPS | Worst p99 ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms |\n")
+        report.write("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
         for name, _path, metadata, summary, resources in summaries:
             report.write(
                 f"| {metadata.get('run_group', 'unspecified')} "
                 f"| {name} "
+                f"| {metadata.get('bench_profile', 'unspecified')} "
                 f"| {metadata.get('backend_model', 'unspecified')} "
                 f"| {metadata.get('dataplane', 'unspecified')} "
                 f"| {summary['avg_rps']:.2f} "

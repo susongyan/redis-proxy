@@ -9,6 +9,7 @@ RUN_NAME="${RUN_NAME:-$(basename "${RESULT_DIR}")}"
 RUN_GROUP="${RUN_GROUP:-unspecified}"
 BACKEND_MODEL="${BACKEND_MODEL:-unspecified}"
 DATAPLANE="${DATAPLANE:-unspecified}"
+BENCH_PROFILE="${BENCH_PROFILE:-custom}"
 BENCH_TARGET_PID="${BENCH_TARGET_PID:-}"
 BENCH_TARGET_LABEL="${BENCH_TARGET_LABEL:-}"
 BENCH_ADMIN_URL="${BENCH_ADMIN_URL:-}"
@@ -18,6 +19,9 @@ REQUESTS="${REQUESTS:-100000}"
 CLIENTS_LIST="${CLIENTS_LIST:-50 200}"
 PIPELINE_LIST="${PIPELINE_LIST:-1 10 100}"
 TESTS="${TESTS:-set,get}"
+VALUE_SIZE="${VALUE_SIZE:-3}"
+KEYSPACE_LEN="${KEYSPACE_LEN:-}"
+BENCHMARK_THREADS="${BENCHMARK_THREADS:-}"
 
 mkdir -p "${RESULT_DIR}"
 
@@ -27,6 +31,7 @@ run_name=${RUN_NAME}
 run_group=${RUN_GROUP}
 backend_model=${BACKEND_MODEL}
 dataplane=${DATAPLANE}
+bench_profile=${BENCH_PROFILE}
 bench_target_pid=${BENCH_TARGET_PID}
 bench_target_label=${BENCH_TARGET_LABEL}
 bench_admin_url=${BENCH_ADMIN_URL}
@@ -38,6 +43,9 @@ requests=${REQUESTS}
 clients_list=${CLIENTS_LIST}
 pipeline_list=${PIPELINE_LIST}
 tests=${TESTS}
+value_size=${VALUE_SIZE}
+keyspace_len=${KEYSPACE_LEN}
+benchmark_threads=${BENCHMARK_THREADS}
 EOF_META
 
 sample_resources() {
@@ -88,15 +96,24 @@ for clients in ${CLIENTS_LIST}; do
     else
       sampler_pid=""
     fi
+    benchmark_args=(
+      -h "${PROXY_HOST}"
+      -p "${PROXY_PORT}"
+      -n "${REQUESTS}"
+      -c "${clients}"
+      -P "${pipeline}"
+      -d "${VALUE_SIZE}"
+      -t "${TESTS}"
+      --csv
+    )
+    if [[ -n "${KEYSPACE_LEN}" ]]; then
+      benchmark_args+=(-r "${KEYSPACE_LEN}")
+    fi
+    if [[ -n "${BENCHMARK_THREADS}" ]]; then
+      benchmark_args+=(--threads "${BENCHMARK_THREADS}")
+    fi
     set +e
-    docker run --rm "${IMAGE}" redis-benchmark \
-      -h "${PROXY_HOST}" \
-      -p "${PROXY_PORT}" \
-      -n "${REQUESTS}" \
-      -c "${clients}" \
-      -P "${pipeline}" \
-      -t "${TESTS}" \
-      --csv | tee "${output}"
+    docker run --rm "${IMAGE}" redis-benchmark "${benchmark_args[@]}" | tee "${output}"
     benchmark_status="${PIPESTATUS[0]}"
     set -e
     if [[ -n "${sampler_pid}" ]]; then
