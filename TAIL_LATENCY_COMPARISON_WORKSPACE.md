@@ -135,6 +135,8 @@ Redis Cluster 使用宿主机端口 `7000-7005`：
 
 当前 Redis Cluster 路由实现是简化版本，适合早期 smoke 验证和指标暴露，还不是生产级 `CLUSTER SLOTS` 拓扑实现。
 
+Go 数据面已开始升级为生产级路由：启动时读取 `CLUSTER SLOTS` 构建 slot cache，遇到 `MOVED` 响应时更新单 slot 并按需初始化 backend 连接。Java 数据面对齐和周期性拓扑刷新仍在后续阶段。
+
 ## Smoke 与 Benchmark
 
 对当前监听在 `127.0.0.1:6379` 的数据面执行 smoke 测试：

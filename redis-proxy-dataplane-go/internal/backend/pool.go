@@ -45,14 +45,17 @@ type Client struct {
 }
 
 type Pools struct {
-	mu    sync.RWMutex
-	conns map[string][]*Client
-	reg   *metrics.Registry
-	log   *zap.Logger
+	mu               sync.RWMutex
+	conns            map[string][]*Client
+	reg              *metrics.Registry
+	log              *zap.Logger
+	defaultSize      int
+	defaultInflight  int
+	maxResponseBytes int
 }
 
 func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pools, error) {
-	p := &Pools{conns: map[string][]*Client{}, reg: reg, log: log}
+	p := &Pools{conns: map[string][]*Client{}, reg: reg, log: log, maxResponseBytes: cfg.Limits.MaxResponseBytes}
 	for _, cluster := range cfg.Backends.Clusters {
 		size := cluster.Pool.ConnectionsPerNode
 		if size <= 0 {
@@ -62,23 +65,53 @@ func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pool
 		if maxInflight <= 0 {
 			maxInflight = 1024
 		}
+		if p.defaultSize == 0 {
+			p.defaultSize = size
+			p.defaultInflight = maxInflight
+		}
 		for _, node := range cluster.Nodes {
-			if _, ok := p.conns[node]; ok {
-				continue
+			if err := p.Ensure(node); err != nil {
+				p.Close()
+				return nil, err
 			}
-			clients := make([]*Client, 0, size)
-			for i := 0; i < size; i++ {
-				client, err := newClient(node, maxInflight, cfg.Limits.MaxResponseBytes, reg, log)
-				if err != nil {
-					p.Close()
-					return nil, err
-				}
-				clients = append(clients, client)
-			}
-			p.conns[node] = clients
 		}
 	}
 	return p, nil
+}
+
+func (p *Pools) Ensure(addr string) error {
+	p.mu.RLock()
+	_, ok := p.conns[addr]
+	p.mu.RUnlock()
+	if ok {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.conns[addr]; ok {
+		return nil
+	}
+	size := p.defaultSize
+	if size <= 0 {
+		size = 8
+	}
+	maxInflight := p.defaultInflight
+	if maxInflight <= 0 {
+		maxInflight = 1024
+	}
+	clients := make([]*Client, 0, size)
+	for i := 0; i < size; i++ {
+		client, err := newClient(addr, maxInflight, p.maxResponseBytes, p.reg, p.log)
+		if err != nil {
+			for _, c := range clients {
+				c.close()
+			}
+			return err
+		}
+		clients = append(clients, client)
+	}
+	p.conns[addr] = clients
+	return nil
 }
 
 func (p *Pools) Do(addr string, payload []byte, maxResponseBytes int) ([]byte, error) {

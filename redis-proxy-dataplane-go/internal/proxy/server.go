@@ -209,6 +209,7 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 	}
 	if bytes.HasPrefix(item.response, []byte("-MOVED ")) {
 		s.metrics.Moved.Inc()
+		s.router.UpdateMoved(item.response, s.backends)
 	}
 	if bytes.HasPrefix(item.response, []byte("-ASK ")) {
 		s.metrics.Ask.Inc()

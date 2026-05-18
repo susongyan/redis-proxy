@@ -40,6 +40,9 @@ func main() {
 		log.Fatal("init backend pools", zap.Error(err))
 	}
 	defer pools.Close()
+	if err := rt.RefreshSlots(pools); err != nil {
+		log.Warn("refresh cluster slots", zap.Error(err))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
