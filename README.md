@@ -323,12 +323,12 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 5. Go 数据面暴露 slot cache 覆盖度、routeEpoch、slot refresh 成功/失败次数和最近成功刷新时间指标。
 6. Java 数据面已对齐 `CLUSTER SLOTS` slot cache、周期刷新配置、MOVED 单 slot 更新和路由状态指标。
 7. Java 数据面同一 client 到同一 backend 使用稳定后端连接亲和，避免依赖型 pipeline 在多后端连接间执行乱序。
+8. Go 数据面同一 client 到同一 backend 也使用稳定后端连接亲和，并补充单元测试锁定该语义。
 
 待完成：
 
-1. Go 数据面补齐同一 client/backend 后端连接亲和，避免依赖型 pipeline 执行乱序。
-2. 支持 routeEpoch 原子切换。
-3. 支持灰度路由和回滚。
+1. 支持 routeEpoch 原子切换。
+2. 支持灰度路由和回滚。
 
 第三阶段：治理能力
 
