@@ -141,7 +141,7 @@ REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-up.s
 REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down.sh
 ```
 
-Go 数据面已开始升级为生产级路由：启动时读取 `CLUSTER SLOTS` 构建 slot cache，遇到 `MOVED` 响应时更新单 slot 并按需初始化 backend 连接，并支持周期性拓扑刷新。Java 数据面对齐仍在后续阶段。
+Go 和 Java 数据面已开始升级为生产级路由：启动时读取 `CLUSTER SLOTS` 构建 slot cache，遇到 `MOVED` 响应时更新单 slot 并按需初始化 backend 连接，并支持周期性拓扑刷新。Java 数据面已补充同一 client/backend 的后端连接亲和，避免依赖型 pipeline 在多后端连接间执行乱序；Go 数据面仍需对齐这一点。
 
 ## Smoke 与 Benchmark
 

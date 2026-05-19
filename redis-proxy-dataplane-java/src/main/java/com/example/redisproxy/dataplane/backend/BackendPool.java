@@ -50,20 +50,29 @@ public class BackendPool implements AutoCloseable {
     }
 
     public CompletableFuture<ByteBuf> doRequest(String address, ByteBuf request) {
+        return doRequest(address, request, 0);
+    }
+
+    public CompletableFuture<ByteBuf> doRequest(String address, ByteBuf request, int affinity) {
         List<BackendConnection> connections = pools.computeIfAbsent(address, ignored -> connectPool(address, 1));
-        BackendConnection selected = null;
-        for (BackendConnection connection : connections) {
-            if (!connection.isActive()) {
-                continue;
-            }
-            if (selected == null || connection.inflight() < selected.inflight()) {
-                selected = connection;
+        int start = Math.floorMod(affinity, connections.size());
+        for (int i = 0; i < connections.size(); i++) {
+            BackendConnection connection = connections.get((start + i) % connections.size());
+            if (connection.isActive()) {
+                return connection.send(request);
             }
         }
-        if (selected == null) {
-            return CompletableFuture.failedFuture(new IllegalStateException("backend unavailable: " + address));
+        return CompletableFuture.failedFuture(new IllegalStateException("backend unavailable: " + address));
+    }
+
+    public void ensure(String address) {
+        pools.computeIfAbsent(address, ignored -> connectPool(address, 1));
+    }
+
+    public void ensureAll(List<String> addresses) {
+        for (String address : addresses) {
+            ensure(address);
         }
-        return selected.send(request);
     }
 
     private List<BackendConnection> connectPool(String address, int size) {

@@ -47,7 +47,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         registry.counter("redis.proxy.requests", "command", command).increment();
         try {
             String backend = routeResolver.route(request);
-            backendPool.doRequest(backend, request.raw()).whenComplete((response, error) ->
+            backendPool.doRequest(backend, request.raw(), ctx.channel().id().asLongText().hashCode()).whenComplete((response, error) ->
                     ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(response, error, command, sample), pending -> flush(ctx, pending))));
         } catch (Exception e) {
             ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(null, e, command, sample), pending -> flush(ctx, pending)));
@@ -80,6 +80,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         ByteBuf response = pending.response();
         if (startsWith(response, "-MOVED ")) {
             moved.increment();
+            routeResolver.updateMoved(response, backendPool);
         } else if (startsWith(response, "-ASK ")) {
             ask.increment();
         }

@@ -6,7 +6,7 @@ GC_PROFILE="${2:-g1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case "${MODE}" in
-  standalone|cluster) ;;
+  standalone|cluster|cluster-local) ;;
   *)
     echo "Unknown mode '${MODE}'. Expected standalone or cluster." >&2
     exit 1

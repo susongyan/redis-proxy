@@ -22,9 +22,9 @@ proxy:
     clusters:
       - name: "redis-a"
         nodes:
-          - "127.0.0.1:7000"
-          - "127.0.0.1:7001"
-          - "127.0.0.1:7002"
+          - "127.0.0.1:7100"
+          - "127.0.0.1:7101"
+          - "127.0.0.1:7102"
         pool:
           connectionsPerNode: 16
           maxInflightPerConnection: 4096

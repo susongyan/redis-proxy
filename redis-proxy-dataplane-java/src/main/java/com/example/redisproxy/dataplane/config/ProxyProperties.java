@@ -20,6 +20,9 @@ public class ProxyProperties {
         if (routing.defaultCluster == null || routing.defaultCluster.isBlank()) {
             throw new IllegalArgumentException("routing.defaultCluster is required");
         }
+        if (routing.clusterSlotsRefreshIntervalSeconds < 0) {
+            throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
+        }
         boolean found = backends.clusters.stream().anyMatch(c -> routing.defaultCluster.equals(c.name));
         if (!found) {
             throw new IllegalArgumentException("default cluster not found: " + routing.defaultCluster);
@@ -87,10 +90,13 @@ public class ProxyProperties {
     public static class Routing {
         private String defaultCluster;
         private long routeEpoch = 1;
+        private int clusterSlotsRefreshIntervalSeconds = 0;
         public String getDefaultCluster() { return defaultCluster; }
         public void setDefaultCluster(String defaultCluster) { this.defaultCluster = defaultCluster; }
         public long getRouteEpoch() { return routeEpoch; }
         public void setRouteEpoch(long routeEpoch) { this.routeEpoch = routeEpoch; }
+        public int getClusterSlotsRefreshIntervalSeconds() { return clusterSlotsRefreshIntervalSeconds; }
+        public void setClusterSlotsRefreshIntervalSeconds(int clusterSlotsRefreshIntervalSeconds) { this.clusterSlotsRefreshIntervalSeconds = clusterSlotsRefreshIntervalSeconds; }
     }
 
     public static class Limits {
