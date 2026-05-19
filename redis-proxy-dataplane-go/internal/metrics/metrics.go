@@ -16,6 +16,10 @@ type Registry struct {
 	ClientPending   prometheus.Gauge
 	Moved           prometheus.Counter
 	Ask             prometheus.Counter
+	SlotCoverage    prometheus.Gauge
+	RouteEpoch      prometheus.Gauge
+	SlotRefreshes   *prometheus.CounterVec
+	SlotRefreshTime prometheus.Gauge
 }
 
 func NewRegistry() *Registry {
@@ -30,6 +34,10 @@ func NewRegistry() *Registry {
 	r.ClientPending = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_client_pending_responses", Help: "Pending client responses"})
 	r.Moved = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_moved_total", Help: "MOVED responses"})
 	r.Ask = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_ask_total", Help: "ASK responses"})
+	r.SlotCoverage = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_coverage", Help: "Number of Redis Cluster slots with cached backend mapping"})
+	r.RouteEpoch = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_route_epoch", Help: "Current route epoch from local config"})
+	r.SlotRefreshes = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_cluster_slot_refresh_total", Help: "Cluster slot refresh attempts by result"}, []string{"result"})
+	r.SlotRefreshTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_last_refresh_timestamp_seconds", Help: "Unix timestamp of the last successful cluster slot refresh"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -43,6 +51,10 @@ func NewRegistry() *Registry {
 		r.ClientPending,
 		r.Moved,
 		r.Ask,
+		r.SlotCoverage,
+		r.RouteEpoch,
+		r.SlotRefreshes,
+		r.SlotRefreshTime,
 	)
 	return r
 }

@@ -149,6 +149,7 @@ backends:
 routing:
   defaultCluster: "redis-a"
   routeEpoch: 1
+  clusterSlotsRefreshIntervalSeconds: 30
 
 limits:
   maxPipelineDepth: 1024
@@ -318,13 +319,14 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 1. Go 数据面启动时通过 `CLUSTER SLOTS` 构建 slot cache。
 2. Go 数据面按真实 slot cache 路由，不再只使用 `slot % len(nodes)` 简化映射。
 3. Go 数据面遇到 `MOVED` 响应时更新单 slot cache，并按需初始化新 backend 连接。
+4. Go 数据面支持周期性 `CLUSTER SLOTS` 拓扑刷新，可通过 `routing.clusterSlotsRefreshIntervalSeconds` 配置，`0` 表示关闭。
+5. Go 数据面暴露 slot cache 覆盖度、routeEpoch、slot refresh 成功/失败次数和最近成功刷新时间指标。
 
 待完成：
 
 1. Java 数据面对齐 `CLUSTER SLOTS` 拓扑刷新。
-2. 周期性拓扑刷新和失败重试策略。
-3. 支持 routeEpoch 原子切换。
-4. 支持灰度路由和回滚。
+2. 支持 routeEpoch 原子切换。
+3. 支持灰度路由和回滚。
 
 第三阶段：治理能力
 

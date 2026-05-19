@@ -40,12 +40,11 @@ func main() {
 		log.Fatal("init backend pools", zap.Error(err))
 	}
 	defer pools.Close()
-	if err := rt.RefreshSlots(pools); err != nil {
-		log.Warn("refresh cluster slots", zap.Error(err))
-	}
+	refreshClusterSlots(cfg, rt, pools, reg, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	startClusterSlotRefreshLoop(ctx, cfg, rt, pools, reg, log)
 
 	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, reg)
 	go func() {
@@ -66,4 +65,45 @@ func main() {
 	defer cancel()
 	server.Shutdown()
 	_ = adminServer.Shutdown(shutdownCtx)
+}
+
+func refreshClusterSlots(cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) {
+	observeRoutingState(cfg, rt, reg)
+	if cfg.Mode != "cluster" {
+		return
+	}
+	if err := rt.RefreshSlots(pools); err != nil {
+		reg.SlotRefreshes.WithLabelValues("error").Inc()
+		log.Warn("refresh cluster slots", zap.Error(err))
+		return
+	}
+	observeRoutingState(cfg, rt, reg)
+	reg.SlotRefreshes.WithLabelValues("success").Inc()
+}
+
+func startClusterSlotRefreshLoop(ctx context.Context, cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) {
+	if cfg.Mode != "cluster" || cfg.Routing.ClusterSlotsRefreshIntervalSeconds <= 0 {
+		return
+	}
+	interval := time.Duration(cfg.Routing.ClusterSlotsRefreshIntervalSeconds) * time.Second
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshClusterSlots(cfg, rt, pools, reg, log)
+			}
+		}
+	}()
+}
+
+func observeRoutingState(cfg *config.Config, rt *router.Router, reg *metrics.Registry) {
+	reg.RouteEpoch.Set(float64(cfg.Routing.RouteEpoch))
+	if cfg.Mode == "cluster" {
+		reg.SlotCoverage.Set(float64(rt.SlotCoverage()))
+		reg.SlotRefreshTime.Set(float64(time.Now().Unix()))
+	}
 }

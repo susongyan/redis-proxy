@@ -41,8 +41,9 @@ type PoolConfig struct {
 }
 
 type RoutingConfig struct {
-	DefaultCluster string `yaml:"defaultCluster"`
-	RouteEpoch     int64  `yaml:"routeEpoch"`
+	DefaultCluster                     string `yaml:"defaultCluster"`
+	RouteEpoch                         int64  `yaml:"routeEpoch"`
+	ClusterSlotsRefreshIntervalSeconds int    `yaml:"clusterSlotsRefreshIntervalSeconds"`
 }
 
 type LimitsConfig struct {
@@ -94,6 +95,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Routing.DefaultCluster == "" {
 		return errors.New("routing.defaultCluster is required")
+	}
+	if c.Routing.ClusterSlotsRefreshIntervalSeconds < 0 {
+		return errors.New("routing.clusterSlotsRefreshIntervalSeconds must be >= 0")
 	}
 	if len(c.Backends.Clusters) == 0 {
 		return errors.New("at least one backend cluster is required")

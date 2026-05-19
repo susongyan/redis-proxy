@@ -20,6 +20,7 @@ backends:
 routing:
   defaultCluster: "redis-a"
   routeEpoch: 1
+  clusterSlotsRefreshIntervalSeconds: 30
 
 limits:
   maxPipelineDepth: 1024

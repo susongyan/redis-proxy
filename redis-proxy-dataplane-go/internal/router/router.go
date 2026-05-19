@@ -94,6 +94,18 @@ func (r *Router) UpdateMoved(response []byte, pools *backend.Pools) {
 	}
 }
 
+func (r *Router) SlotCoverage() int {
+	r.slotMu.RLock()
+	defer r.slotMu.RUnlock()
+	covered := 0
+	for _, addr := range r.slotNodes {
+		if addr != "" {
+			covered++
+		}
+	}
+	return covered
+}
+
 func (r *Router) parseClusterSlots(raw []byte) (map[int]string, error) {
 	value, err := protocol.ParseValue(raw)
 	if err != nil {
@@ -146,11 +158,11 @@ func (r *Router) normalizeAddr(addr string) string {
 		}
 	}
 	for _, node := range r.cluster.Nodes {
-		nodeHost, nodePort, err := net.SplitHostPort(node)
+		_, nodePort, err := net.SplitHostPort(node)
 		if err != nil {
 			continue
 		}
-		if nodePort == port && (host == nodeHost || host == "" || host == "127.0.0.1" || net.ParseIP(host) != nil) {
+		if nodePort == port {
 			return node
 		}
 	}

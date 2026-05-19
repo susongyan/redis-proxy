@@ -63,6 +63,21 @@ func TestUpdateMoved(t *testing.T) {
 	if !ok || addr != "127.0.0.1:7000" {
 		t.Fatalf("slot 42 addr=%q ok=%v", addr, ok)
 	}
+	if got := rt.SlotCoverage(); got != 1 {
+		t.Fatalf("slot coverage=%d want 1", got)
+	}
+}
+
+func TestNormalizeAddrMapsClusterContainerHostnameByPort(t *testing.T) {
+	rt := &Router{
+		mode: "cluster",
+		cluster: config.ClusterConfig{
+			Nodes: []string{"127.0.0.1:7100", "127.0.0.1:7101"},
+		},
+	}
+	if got := rt.normalizeAddr("redis-proxy-cluster-7101:7101"); got != "127.0.0.1:7101" {
+		t.Fatalf("normalized addr=%q", got)
+	}
 }
 
 func protocolRequest(args ...string) protocol.Request {
