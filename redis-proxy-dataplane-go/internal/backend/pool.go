@@ -52,10 +52,12 @@ type Pools struct {
 	defaultSize      int
 	defaultInflight  int
 	maxResponseBytes int
+	done             chan struct{}
+	closeOnce        sync.Once
 }
 
 func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pools, error) {
-	p := &Pools{conns: map[string][]*Client{}, reg: reg, log: log, maxResponseBytes: cfg.Limits.MaxResponseBytes}
+	p := &Pools{conns: map[string][]*Client{}, reg: reg, log: log, maxResponseBytes: cfg.Limits.MaxResponseBytes, done: make(chan struct{})}
 	for _, cluster := range cfg.Backends.Clusters {
 		size := cluster.Pool.ConnectionsPerNode
 		if size <= 0 {
@@ -76,6 +78,7 @@ func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pool
 			}
 		}
 	}
+	go p.reconnectLoop()
 	return p, nil
 }
 
@@ -173,13 +176,82 @@ func (p *Pools) selectClientByAffinity(addr string, affinity uint64) *Client {
 }
 
 func (p *Pools) Close() {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for _, clients := range p.conns {
-		for _, client := range clients {
-			client.close()
+	p.closeOnce.Do(func() {
+		close(p.done)
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		for _, clients := range p.conns {
+			for _, client := range clients {
+				client.close()
+			}
+		}
+	})
+}
+
+type reconnectCandidate struct {
+	addr  string
+	index int
+	old   *Client
+}
+
+func (p *Pools) reconnectLoop() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.reconnectInactiveOnce()
 		}
 	}
+}
+
+func (p *Pools) reconnectInactiveOnce() {
+	candidates := p.inactiveClients()
+	for _, candidate := range candidates {
+		select {
+		case <-p.done:
+			return
+		default:
+		}
+		replacement, err := newClient(candidate.addr, p.defaultInflight, p.maxResponseBytes, p.reg, p.log)
+		if err != nil {
+			p.reg.BackendReconnects.WithLabelValues("error").Inc()
+			p.log.Warn("reconnect backend", zap.String("backend", candidate.addr), zap.Error(err))
+			continue
+		}
+		if p.replaceInactive(candidate, replacement) {
+			p.reg.BackendReconnects.WithLabelValues("success").Inc()
+		} else {
+			replacement.close()
+		}
+	}
+}
+
+func (p *Pools) inactiveClients() []reconnectCandidate {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var candidates []reconnectCandidate
+	for addr, clients := range p.conns {
+		for index, client := range clients {
+			if !client.isActive() {
+				candidates = append(candidates, reconnectCandidate{addr: addr, index: index, old: client})
+			}
+		}
+	}
+	return candidates
+}
+
+func (p *Pools) replaceInactive(candidate reconnectCandidate, replacement *Client) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clients := p.conns[candidate.addr]
+	if candidate.index >= len(clients) || clients[candidate.index] != candidate.old || candidate.old.isActive() {
+		return false
+	}
+	clients[candidate.index] = replacement
+	return true
 }
 
 func newClient(addr string, maxInflight int, maxResponseBytes int, reg *metrics.Registry, log *zap.Logger) (*Client, error) {

@@ -5,21 +5,22 @@ import (
 )
 
 type Registry struct {
-	Prom            *prometheus.Registry
-	Requests        *prometheus.CounterVec
-	Errors          *prometheus.CounterVec
-	Latency         *prometheus.HistogramVec
-	BackendLatency  *prometheus.HistogramVec
-	ActiveConns     prometheus.Gauge
-	BackendConns    prometheus.Gauge
-	BackendInflight prometheus.Gauge
-	ClientPending   prometheus.Gauge
-	Moved           prometheus.Counter
-	Ask             prometheus.Counter
-	SlotCoverage    prometheus.Gauge
-	RouteEpoch      prometheus.Gauge
-	SlotRefreshes   *prometheus.CounterVec
-	SlotRefreshTime prometheus.Gauge
+	Prom              *prometheus.Registry
+	Requests          *prometheus.CounterVec
+	Errors            *prometheus.CounterVec
+	Latency           *prometheus.HistogramVec
+	BackendLatency    *prometheus.HistogramVec
+	ActiveConns       prometheus.Gauge
+	BackendConns      prometheus.Gauge
+	BackendInflight   prometheus.Gauge
+	ClientPending     prometheus.Gauge
+	Moved             prometheus.Counter
+	Ask               prometheus.Counter
+	SlotCoverage      prometheus.Gauge
+	RouteEpoch        prometheus.Gauge
+	SlotRefreshes     *prometheus.CounterVec
+	SlotRefreshTime   prometheus.Gauge
+	BackendReconnects *prometheus.CounterVec
 }
 
 func NewRegistry() *Registry {
@@ -38,6 +39,7 @@ func NewRegistry() *Registry {
 	r.RouteEpoch = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_route_epoch", Help: "Current route epoch from local config"})
 	r.SlotRefreshes = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_cluster_slot_refresh_total", Help: "Cluster slot refresh attempts by result"}, []string{"result"})
 	r.SlotRefreshTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_last_refresh_timestamp_seconds", Help: "Unix timestamp of the last successful cluster slot refresh"})
+	r.BackendReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_backend_reconnect_total", Help: "Backend reconnect attempts by result"}, []string{"result"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -55,6 +57,7 @@ func NewRegistry() *Registry {
 		r.RouteEpoch,
 		r.SlotRefreshes,
 		r.SlotRefreshTime,
+		r.BackendReconnects,
 	)
 	return r
 }
