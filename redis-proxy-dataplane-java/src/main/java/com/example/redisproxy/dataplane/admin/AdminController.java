@@ -1,15 +1,23 @@
 package com.example.redisproxy.dataplane.admin;
 
+import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
+import com.example.redisproxy.dataplane.router.RouteResolver;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class AdminController {
     private final ProxyProperties properties;
+    private final RouteResolver routeResolver;
+    private final BackendPool backendPool;
 
-    public AdminController(ProxyProperties properties) {
+    public AdminController(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool) {
         this.properties = properties;
+        this.routeResolver = routeResolver;
+        this.backendPool = backendPool;
     }
 
     @GetMapping("/healthz")
@@ -18,12 +26,30 @@ public class AdminController {
     }
 
     @GetMapping("/readyz")
-    public String readyz() {
-        return "ready\n";
+    public ResponseEntity<String> readyz() {
+        if (!ready()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body("not ready\n");
+        }
+        return ResponseEntity.ok("ready\n");
     }
 
     @GetMapping("/debug/config")
     public ProxyProperties config() {
         return properties;
+    }
+
+    private boolean ready() {
+        if (!"cluster".equals(properties.getMode())) {
+            return !routeResolver.defaultNodes().isEmpty() && backendPool.hasActive(routeResolver.defaultNodes().getFirst());
+        }
+        if (routeResolver.slotCoverage() != 16384) {
+            return false;
+        }
+        for (String owner : routeResolver.slotOwners()) {
+            if (!backendPool.hasActive(owner)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

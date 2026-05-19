@@ -12,8 +12,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -109,8 +111,22 @@ public class RouteResolver {
         backendPool.ensure(addr);
     }
 
-    int slotCoverage() {
+    public int slotCoverage() {
         return slotCoverage.get();
+    }
+
+    public List<String> slotOwners() {
+        Set<String> seen = new HashSet<>();
+        for (String node : slotNodes) {
+            if (node != null && !node.isBlank()) {
+                seen.add(node);
+            }
+        }
+        return List.copyOf(seen);
+    }
+
+    public List<String> defaultNodes() {
+        return List.copyOf(defaultCluster.getNodes());
     }
 
     String normalizeAddr(String addr) {

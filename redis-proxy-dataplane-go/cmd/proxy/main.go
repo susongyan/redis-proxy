@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,16 +45,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	startClusterSlotRefreshLoop(ctx, cfg, rt, pools, reg, log)
+	triggerRefresh := startClusterSlotRefreshLoop(ctx, cfg, rt, pools, reg, log)
 
-	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, reg)
+	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, rt, pools, reg)
 	go func() {
 		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("admin server", zap.Error(err))
 		}
 	}()
 
-	server := proxy.NewServer(cfg, rt, pools, reg, log)
+	server := proxy.NewServer(cfg, rt, pools, reg, log, triggerRefresh)
 	go func() {
 		if err := server.ListenAndServe(ctx); err != nil {
 			log.Fatal("proxy server", zap.Error(err))
@@ -81,23 +82,62 @@ func refreshClusterSlots(cfg *config.Config, rt *router.Router, pools *backend.P
 	reg.SlotRefreshes.WithLabelValues("success").Inc()
 }
 
-func startClusterSlotRefreshLoop(ctx context.Context, cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) {
+func startClusterSlotRefreshLoop(ctx context.Context, cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) func() {
+	trigger := make(chan struct{}, 1)
 	if cfg.Mode != "cluster" || cfg.Routing.ClusterSlotsRefreshIntervalSeconds <= 0 {
-		return
+		return func() {}
 	}
 	interval := time.Duration(cfg.Routing.ClusterSlotsRefreshIntervalSeconds) * time.Second
+	limiter := newRefreshLimiter(2 * time.Second)
 	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
 		for {
+			next := interval
+			if clusterDegraded(rt, pools) {
+				next = 5 * time.Second
+			}
+			timer := time.NewTimer(next)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
+			case <-timer.C:
 				refreshClusterSlots(cfg, rt, pools, reg, log)
+			case <-trigger:
+				timer.Stop()
+				if limiter.Allow() {
+					refreshClusterSlots(cfg, rt, pools, reg, log)
+				}
 			}
 		}
 	}()
+	return func() {
+		select {
+		case trigger <- struct{}{}:
+		default:
+		}
+	}
+}
+
+type refreshLimiter struct {
+	mu       sync.Mutex
+	interval time.Duration
+	last     time.Time
+	now      func() time.Time
+}
+
+func newRefreshLimiter(interval time.Duration) *refreshLimiter {
+	return &refreshLimiter{interval: interval, now: time.Now}
+}
+
+func (l *refreshLimiter) Allow() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if !l.last.IsZero() && now.Sub(l.last) < l.interval {
+		return false
+	}
+	l.last = now
+	return true
 }
 
 func observeRoutingState(cfg *config.Config, rt *router.Router, reg *metrics.Registry) {
@@ -106,4 +146,16 @@ func observeRoutingState(cfg *config.Config, rt *router.Router, reg *metrics.Reg
 		reg.SlotCoverage.Set(float64(rt.SlotCoverage()))
 		reg.SlotRefreshTime.Set(float64(time.Now().Unix()))
 	}
+}
+
+func clusterDegraded(rt *router.Router, pools *backend.Pools) bool {
+	if rt.SlotCoverage() != router.Slots {
+		return true
+	}
+	for _, owner := range rt.SlotOwners() {
+		if !pools.HasActive(owner) {
+			return true
+		}
+	}
+	return false
 }

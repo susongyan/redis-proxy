@@ -68,6 +68,19 @@ func TestUpdateMoved(t *testing.T) {
 	}
 }
 
+func TestAskDoesNotUpdateSlotCache(t *testing.T) {
+	rt := &Router{
+		mode: "cluster",
+		cluster: config.ClusterConfig{
+			Nodes: []string{"127.0.0.1:7000"},
+		},
+	}
+	rt.UpdateMoved([]byte("-ASK 42 172.18.0.2:7000\r\n"), nil)
+	if _, ok := rt.slotAddr(42); ok {
+		t.Fatal("ASK must not update long-lived slot cache")
+	}
+}
+
 func TestNormalizeAddrMapsClusterContainerHostnameByPort(t *testing.T) {
 	rt := &Router{
 		mode: "cluster",

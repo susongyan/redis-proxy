@@ -30,6 +30,7 @@ type Server struct {
 	done     chan struct{}
 	wg       sync.WaitGroup
 	clientID atomic.Uint64
+	onMoved  func()
 }
 
 type completion struct {
@@ -40,8 +41,8 @@ type completion struct {
 	start    time.Time
 }
 
-func NewServer(cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) *Server {
-	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{})}
+func NewServer(cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func()) *Server {
+	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -210,6 +211,9 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 	if bytes.HasPrefix(item.response, []byte("-MOVED ")) {
 		s.metrics.Moved.Inc()
 		s.router.UpdateMoved(item.response, s.backends)
+		if s.onMoved != nil {
+			s.onMoved()
+		}
 	}
 	if bytes.HasPrefix(item.response, []byte("-ASK ")) {
 		s.metrics.Ask.Inc()

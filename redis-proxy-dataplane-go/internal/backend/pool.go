@@ -3,6 +3,7 @@ package backend
 import (
 	"bufio"
 	"errors"
+	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,14 @@ import (
 )
 
 var ErrBackendUnavailable = errors.New("backend unavailable")
+
+const (
+	initialReconnectDelay = 500 * time.Millisecond
+	maxReconnectDelay     = 30 * time.Second
+	reconnectScanInterval = 500 * time.Millisecond
+	globalReconnectLimit  = 64
+	nodeReconnectLimit    = 2
+)
 
 type Result struct {
 	Response []byte
@@ -42,11 +51,15 @@ type Client struct {
 	closeOnce        sync.Once
 	active           atomic.Bool
 	inflight         atomic.Int64
+	reconnecting     atomic.Bool
+	nextReconnectAt  atomic.Int64
+	reconnectDelayMS atomic.Int64
 }
 
 type Pools struct {
 	mu               sync.RWMutex
 	conns            map[string][]*Client
+	nodeReconnectSem map[string]chan struct{}
 	reg              *metrics.Registry
 	log              *zap.Logger
 	defaultSize      int
@@ -54,10 +67,19 @@ type Pools struct {
 	maxResponseBytes int
 	done             chan struct{}
 	closeOnce        sync.Once
+	reconnectSem     chan struct{}
 }
 
 func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pools, error) {
-	p := &Pools{conns: map[string][]*Client{}, reg: reg, log: log, maxResponseBytes: cfg.Limits.MaxResponseBytes, done: make(chan struct{})}
+	p := &Pools{
+		conns:            map[string][]*Client{},
+		nodeReconnectSem: map[string]chan struct{}{},
+		reg:              reg,
+		log:              log,
+		maxResponseBytes: max(1, cfg.Limits.MaxResponseBytes),
+		done:             make(chan struct{}),
+		reconnectSem:     make(chan struct{}, globalReconnectLimit),
+	}
 	for _, cluster := range cfg.Backends.Clusters {
 		size := cluster.Pool.ConnectionsPerNode
 		if size <= 0 {
@@ -114,6 +136,8 @@ func (p *Pools) Ensure(addr string) error {
 		clients = append(clients, client)
 	}
 	p.conns[addr] = clients
+	p.nodeReconnectSem[addr] = make(chan struct{}, nodeReconnectLimit)
+	p.reg.BackendDesired.WithLabelValues(addr).Set(float64(size))
 	return nil
 }
 
@@ -129,6 +153,7 @@ func (p *Pools) Do(addr string, payload []byte, maxResponseBytes int) ([]byte, e
 func (p *Pools) DoAsync(addr string, payload []byte, cb Callback) error {
 	client := p.selectClient(addr)
 	if client == nil {
+		p.reg.BackendUnavailable.WithLabelValues(addr, "no_active_connection").Inc()
 		return ErrBackendUnavailable
 	}
 	return client.send(payload, cb)
@@ -137,6 +162,7 @@ func (p *Pools) DoAsync(addr string, payload []byte, cb Callback) error {
 func (p *Pools) DoAsyncAffinity(addr string, affinity uint64, payload []byte, cb Callback) error {
 	client := p.selectClientByAffinity(addr, affinity)
 	if client == nil {
+		p.reg.BackendUnavailable.WithLabelValues(addr, "no_active_connection").Inc()
 		return ErrBackendUnavailable
 	}
 	return client.send(payload, cb)
@@ -175,6 +201,29 @@ func (p *Pools) selectClientByAffinity(addr string, affinity uint64) *Client {
 	return nil
 }
 
+func (p *Pools) ActiveCount(addr string) int {
+	p.mu.RLock()
+	clients := p.conns[addr]
+	p.mu.RUnlock()
+	active := 0
+	for _, client := range clients {
+		if client.isActive() {
+			active++
+		}
+	}
+	return active
+}
+
+func (p *Pools) DesiredCount(addr string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.conns[addr])
+}
+
+func (p *Pools) HasActive(addr string) bool {
+	return p.ActiveCount(addr) > 0
+}
+
 func (p *Pools) Close() {
 	p.closeOnce.Do(func() {
 		close(p.done)
@@ -195,7 +244,7 @@ type reconnectCandidate struct {
 }
 
 func (p *Pools) reconnectLoop() {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(reconnectScanInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -215,18 +264,39 @@ func (p *Pools) reconnectInactiveOnce() {
 			return
 		default:
 		}
-		replacement, err := newClient(candidate.addr, p.defaultInflight, p.maxResponseBytes, p.reg, p.log)
-		if err != nil {
-			p.reg.BackendReconnects.WithLabelValues("error").Inc()
-			p.log.Warn("reconnect backend", zap.String("backend", candidate.addr), zap.Error(err))
+		if !candidate.old.shouldReconnectNow(time.Now()) {
 			continue
 		}
-		if p.replaceInactive(candidate, replacement) {
-			p.reg.BackendReconnects.WithLabelValues("success").Inc()
-		} else {
-			replacement.close()
+		if !candidate.old.reconnecting.CompareAndSwap(false, true) {
+			continue
 		}
+		if !p.acquireReconnect(candidate.addr) {
+			candidate.old.reconnecting.Store(false)
+			continue
+		}
+		p.reg.BackendReconnecting.WithLabelValues(candidate.addr).Inc()
+		go p.reconnectCandidate(candidate)
 	}
+}
+
+func (p *Pools) reconnectCandidate(candidate reconnectCandidate) {
+	defer func() {
+		p.releaseReconnect(candidate.addr)
+		p.reg.BackendReconnecting.WithLabelValues(candidate.addr).Dec()
+		candidate.old.reconnecting.Store(false)
+	}()
+	replacement, err := newClient(candidate.addr, p.defaultInflight, p.maxResponseBytes, p.reg, p.log)
+	if err != nil {
+		p.reg.BackendReconnects.WithLabelValues(candidate.addr, "error").Inc()
+		candidate.old.scheduleNextReconnect()
+		p.log.Warn("reconnect backend", zap.String("backend", candidate.addr), zap.Error(err))
+		return
+	}
+	if p.replaceInactive(candidate, replacement) {
+		p.reg.BackendReconnects.WithLabelValues(candidate.addr, "success").Inc()
+		return
+	}
+	replacement.close()
 }
 
 func (p *Pools) inactiveClients() []reconnectCandidate {
@@ -254,6 +324,44 @@ func (p *Pools) replaceInactive(candidate reconnectCandidate, replacement *Clien
 	return true
 }
 
+func (p *Pools) acquireReconnect(addr string) bool {
+	select {
+	case p.reconnectSem <- struct{}{}:
+	default:
+		return false
+	}
+	p.mu.RLock()
+	nodeSem := p.nodeReconnectSem[addr]
+	p.mu.RUnlock()
+	if nodeSem == nil {
+		<-p.reconnectSem
+		return false
+	}
+	select {
+	case nodeSem <- struct{}{}:
+		return true
+	default:
+		<-p.reconnectSem
+		return false
+	}
+}
+
+func (p *Pools) releaseReconnect(addr string) {
+	p.mu.RLock()
+	nodeSem := p.nodeReconnectSem[addr]
+	p.mu.RUnlock()
+	if nodeSem != nil {
+		select {
+		case <-nodeSem:
+		default:
+		}
+	}
+	select {
+	case <-p.reconnectSem:
+	default:
+	}
+}
+
 func newClient(addr string, maxInflight int, maxResponseBytes int, reg *metrics.Registry, log *zap.Logger) (*Client, error) {
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
@@ -271,7 +379,9 @@ func newClient(addr string, maxInflight int, maxResponseBytes int, reg *metrics.
 		done:             make(chan struct{}),
 	}
 	client.active.Store(true)
+	client.reconnectDelayMS.Store(int64(initialReconnectDelay / time.Millisecond))
 	reg.BackendConns.Inc()
+	reg.BackendConnsByNode.WithLabelValues(addr).Inc()
 	go client.writeLoop()
 	go client.readLoop()
 	return client, nil
@@ -283,10 +393,12 @@ func (c *Client) isActive() bool {
 
 func (c *Client) send(payload []byte, cb Callback) error {
 	if !c.isActive() {
+		c.reg.BackendUnavailable.WithLabelValues(c.addr, "inactive").Inc()
 		return ErrBackendUnavailable
 	}
 	c.inflight.Add(1)
 	c.reg.BackendInflight.Inc()
+	c.reg.BackendInflightByNode.WithLabelValues(c.addr).Inc()
 	req := request{payload: payload, cb: cb, start: time.Now()}
 	select {
 	case c.requests <- req:
@@ -294,10 +406,14 @@ func (c *Client) send(payload []byte, cb Callback) error {
 	case <-c.done:
 		c.inflight.Add(-1)
 		c.reg.BackendInflight.Dec()
+		c.reg.BackendInflightByNode.WithLabelValues(c.addr).Dec()
+		c.reg.BackendUnavailable.WithLabelValues(c.addr, "closed_before_write").Inc()
 		return ErrBackendUnavailable
 	default:
 		c.inflight.Add(-1)
 		c.reg.BackendInflight.Dec()
+		c.reg.BackendInflightByNode.WithLabelValues(c.addr).Dec()
+		c.reg.BackendUnavailable.WithLabelValues(c.addr, "inflight_limit").Inc()
 		return errors.New("backend inflight limit exceeded")
 	}
 }
@@ -346,6 +462,7 @@ func (c *Client) complete(req request, err error, resp []byte) {
 	}
 	c.inflight.Add(-1)
 	c.reg.BackendInflight.Dec()
+	c.reg.BackendInflightByNode.WithLabelValues(c.addr).Dec()
 	req.cb(Result{Response: resp, Err: err})
 }
 
@@ -365,8 +482,43 @@ func (c *Client) failQueued(err error) {
 func (c *Client) close() {
 	c.closeOnce.Do(func() {
 		c.active.Store(false)
-		close(c.done)
-		_ = c.conn.Close()
-		c.reg.BackendConns.Dec()
+		if c.done != nil {
+			close(c.done)
+		}
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		if c.reg != nil {
+			c.reg.BackendConns.Dec()
+			c.reg.BackendConnsByNode.WithLabelValues(c.addr).Dec()
+		}
 	})
+}
+
+func (c *Client) shouldReconnectNow(now time.Time) bool {
+	next := c.nextReconnectAt.Load()
+	return next == 0 || now.UnixNano() >= next
+}
+
+func (c *Client) scheduleNextReconnect() {
+	current := time.Duration(c.reconnectDelayMS.Load()) * time.Millisecond
+	if current <= 0 {
+		current = initialReconnectDelay
+	}
+	delay := withJitter(current)
+	next := time.Now().Add(delay)
+	c.nextReconnectAt.Store(next.UnixNano())
+	nextBase := current * 2
+	if nextBase > maxReconnectDelay {
+		nextBase = maxReconnectDelay
+	}
+	c.reconnectDelayMS.Store(int64(nextBase / time.Millisecond))
+}
+
+func withJitter(base time.Duration) time.Duration {
+	if base <= 0 {
+		return initialReconnectDelay
+	}
+	jitterRange := max(time.Millisecond, base/5)
+	return base + time.Duration(rand.Int63n(int64(jitterRange)))
 }

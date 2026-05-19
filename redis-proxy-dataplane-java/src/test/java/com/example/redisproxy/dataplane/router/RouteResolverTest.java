@@ -30,7 +30,18 @@ class RouteResolverTest {
         assertThat(resolver.normalizeAddr("redis-proxy-cluster-7101:7101")).isEqualTo("127.0.0.1:7101");
     }
 
+    @Test
+    void askDoesNotUpdateLongLivedSlotCache() {
+        RouteResolver resolver = resolver("127.0.0.1:7100", "127.0.0.1:7101");
+        resolver.updateMoved(Unpooled.copiedBuffer("-ASK 42 127.0.0.1:7101\r\n", StandardCharsets.US_ASCII), null);
+        assertThat(resolver.slotCoverage()).isZero();
+    }
+
     private static RouteResolver resolver(String... nodes) {
+        return new RouteResolver(properties(nodes), new SimpleMeterRegistry());
+    }
+
+    private static ProxyProperties properties(String... nodes) {
         ProxyProperties properties = new ProxyProperties();
         properties.setMode("cluster");
         ProxyProperties.Cluster cluster = new ProxyProperties.Cluster();
@@ -38,7 +49,7 @@ class RouteResolverTest {
         cluster.setNodes(List.of(nodes));
         properties.getBackends().setClusters(List.of(cluster));
         properties.getRouting().setDefaultCluster("redis-a");
-        return new RouteResolver(properties, new SimpleMeterRegistry());
+        return properties;
     }
 
     private static RespRequest requestForSlotAtLeast(int minSlot) {

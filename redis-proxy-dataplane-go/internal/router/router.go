@@ -106,6 +106,25 @@ func (r *Router) SlotCoverage() int {
 	return covered
 }
 
+func (r *Router) SlotOwners() []string {
+	r.slotMu.RLock()
+	defer r.slotMu.RUnlock()
+	seen := map[string]bool{}
+	owners := make([]string, 0, len(r.cluster.Nodes))
+	for _, addr := range r.slotNodes {
+		if addr == "" || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		owners = append(owners, addr)
+	}
+	return owners
+}
+
+func (r *Router) DefaultNodes() []string {
+	return append([]string(nil), r.cluster.Nodes...)
+}
+
 func (r *Router) parseClusterSlots(raw []byte) (map[int]string, error) {
 	value, err := protocol.ParseValue(raw)
 	if err != nil {

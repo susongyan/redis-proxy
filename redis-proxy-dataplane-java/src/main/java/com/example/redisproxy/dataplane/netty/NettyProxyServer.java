@@ -3,6 +3,7 @@ package com.example.redisproxy.dataplane.netty;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.protocol.RespRequestDecoder;
+import com.example.redisproxy.dataplane.router.ClusterSlotRefresher;
 import com.example.redisproxy.dataplane.router.RouteResolver;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.bootstrap.ServerBootstrap;
@@ -24,6 +25,7 @@ import org.springframework.stereotype.Component;
 public class NettyProxyServer {
     private final ProxyProperties properties;
     private final RouteResolver routeResolver;
+    private final ClusterSlotRefresher slotRefresher;
     private final BackendPool backendPool;
     private final MeterRegistry registry;
     private EventLoopGroup bossGroup;
@@ -32,9 +34,10 @@ public class NettyProxyServer {
     private final AtomicInteger activeConnections = new AtomicInteger();
     private final AtomicInteger pendingClientResponses = new AtomicInteger();
 
-    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, MeterRegistry registry) {
+    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, MeterRegistry registry) {
         this.properties = properties;
         this.routeResolver = routeResolver;
+        this.slotRefresher = slotRefresher;
         this.backendPool = backendPool;
         this.registry = registry;
     }
@@ -54,7 +57,7 @@ public class NettyProxyServer {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new RespRequestDecoder(properties.getLimits().getMaxRequestBytes()));
-                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, registry, activeConnections, pendingClientResponses));
+                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, registry, activeConnections, pendingClientResponses));
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress(listen.host(), listen.port())).sync().channel();

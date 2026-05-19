@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,7 @@ public class ClusterSlotRefresher {
     private final BackendPool backendPool;
     private final MeterRegistry registry;
     private ScheduledExecutorService scheduler;
+    private final AtomicLong lastForcedRefreshMillis = new AtomicLong();
 
     public ClusterSlotRefresher(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, MeterRegistry registry) {
         this.properties = properties;
@@ -43,10 +45,32 @@ public class ClusterSlotRefresher {
             thread.setDaemon(true);
             return thread;
         });
-        scheduler.scheduleWithFixedDelay(this::refreshOnce, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+        scheduler.schedule(this::scheduledRefresh, intervalSeconds, TimeUnit.SECONDS);
     }
 
-    private void refreshOnce() {
+    public void triggerMovedRefresh() {
+        if (!"cluster".equals(properties.getMode()) || scheduler == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long last = lastForcedRefreshMillis.get();
+        if (now - last < 2000 || !lastForcedRefreshMillis.compareAndSet(last, now)) {
+            return;
+        }
+        scheduler.execute(this::refreshOnce);
+    }
+
+    private void scheduledRefresh() {
+        try {
+            refreshOnce();
+        } finally {
+            if (scheduler != null && !scheduler.isShutdown()) {
+                scheduler.schedule(this::scheduledRefresh, nextIntervalSeconds(), TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    void refreshOnce() {
         try {
             routeResolver.refreshSlots(backendPool, Duration.ofSeconds(3));
             if ("cluster".equals(properties.getMode())) {
@@ -58,6 +82,28 @@ public class ClusterSlotRefresher {
             }
             log.warn("refresh cluster slots failed", e);
         }
+    }
+
+    private int nextIntervalSeconds() {
+        if (degraded()) {
+            return 5;
+        }
+        return properties.getRouting().getClusterSlotsRefreshIntervalSeconds();
+    }
+
+    private boolean degraded() {
+        if (!"cluster".equals(properties.getMode())) {
+            return false;
+        }
+        if (routeResolver.slotCoverage() != 16384) {
+            return true;
+        }
+        for (String owner : routeResolver.slotOwners()) {
+            if (!backendPool.hasActive(owner)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @PreDestroy

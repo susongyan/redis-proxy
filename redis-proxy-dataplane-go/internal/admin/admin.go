@@ -4,18 +4,25 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
+	"github.com/example/redis-proxy-dataplane-go/internal/router"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func NewServer(addr string, cfg *config.Config, reg *metrics.Registry) *http.Server {
+func NewServer(addr string, cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready(cfg, rt, pools) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("not ready\n"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready\n"))
 	})
@@ -25,4 +32,20 @@ func NewServer(addr string, cfg *config.Config, reg *metrics.Registry) *http.Ser
 	})
 	mux.Handle("/metrics", promhttp.HandlerFor(reg.Prom, promhttp.HandlerOpts{}))
 	return &http.Server{Addr: addr, Handler: mux}
+}
+
+func ready(cfg *config.Config, rt *router.Router, pools *backend.Pools) bool {
+	if cfg.Mode != "cluster" {
+		nodes := rt.DefaultNodes()
+		return len(nodes) > 0 && pools.HasActive(nodes[0])
+	}
+	if rt.SlotCoverage() != router.Slots {
+		return false
+	}
+	for _, owner := range rt.SlotOwners() {
+		if !pools.HasActive(owner) {
+			return false
+		}
+	}
+	return true
 }

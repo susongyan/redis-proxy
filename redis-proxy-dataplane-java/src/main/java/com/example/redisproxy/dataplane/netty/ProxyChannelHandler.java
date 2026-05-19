@@ -3,6 +3,7 @@ package com.example.redisproxy.dataplane.netty;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.netty.ClientResponseSequencer.PendingResponse;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
+import com.example.redisproxy.dataplane.router.ClusterSlotRefresher;
 import com.example.redisproxy.dataplane.router.RouteResolver;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -21,15 +22,17 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
 
     private final RouteResolver routeResolver;
     private final BackendPool backendPool;
+    private final ClusterSlotRefresher slotRefresher;
     private final MeterRegistry registry;
     private final AtomicInteger activeConnections;
     private final AtomicInteger pendingClientResponses;
     private final Counter moved;
     private final Counter ask;
 
-    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
+    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, ClusterSlotRefresher slotRefresher, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
         this.routeResolver = routeResolver;
         this.backendPool = backendPool;
+        this.slotRefresher = slotRefresher;
         this.registry = registry;
         this.activeConnections = activeConnections;
         this.pendingClientResponses = pendingClientResponses;
@@ -81,6 +84,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         if (startsWith(response, "-MOVED ")) {
             moved.increment();
             routeResolver.updateMoved(response, backendPool);
+            slotRefresher.triggerMovedRefresh();
         } else if (startsWith(response, "-ASK ")) {
             ask.increment();
         }
