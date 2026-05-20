@@ -1,10 +1,14 @@
 package router
 
 import (
+	"net"
 	"testing"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
+	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
 	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
+	"go.uber.org/zap"
 )
 
 func TestSlotExamples(t *testing.T) {
@@ -136,6 +140,90 @@ func TestRouteRuleSelectsGrayClusterByPrefix(t *testing.T) {
 	}
 	if addr != "127.0.0.1:6379" {
 		t.Fatalf("default route addr=%q", addr)
+	}
+}
+
+func TestManagerApplyConfigAcceptsHigherEpochAndRejectsStale(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go acceptLoop(ln)
+
+	addr := ln.Addr().String()
+	base := managerTestConfig(addr, 1, nil)
+	pools, err := backend.NewPools(base, metrics.NewRegistry(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pools.Close()
+
+	manager, err := NewManager(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale := managerTestConfig(addr, 1, nil)
+	result, err := manager.ApplyConfig(stale, pools)
+	if err == nil || result != "stale_epoch" {
+		t.Fatalf("stale apply result=%q err=%v", result, err)
+	}
+
+	next := managerTestConfig(addr, 2, []config.RouteRuleConfig{{
+		Name:           "gray-user",
+		Cluster:        "redis-b",
+		KeyPrefix:      "user:",
+		TrafficPercent: 100,
+	}})
+	result, err = manager.ApplyConfig(next, pools)
+	if err != nil || result != "success" {
+		t.Fatalf("apply result=%q err=%v", result, err)
+	}
+	if manager.CurrentEpoch() != 2 {
+		t.Fatalf("epoch=%d want 2", manager.CurrentEpoch())
+	}
+	decision, err := manager.RouteDecision(protocolRequest("GET", "user:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Cluster != "redis-b" || decision.Rule != "gray-user" {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer conn.Close()
+			select {}
+		}()
+	}
+}
+
+func managerTestConfig(addr string, epoch int64, rules []config.RouteRuleConfig) *config.Config {
+	return &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:6379"},
+		Admin:  config.AdminConfig{Listen: "127.0.0.1:8080"},
+		Mode:   "standalone",
+		Backends: config.BackendConfig{Clusters: []config.ClusterConfig{
+			{Name: "redis-a", Nodes: []string{addr}},
+			{Name: "redis-b", Nodes: []string{addr}},
+		}},
+		Routing: config.RoutingConfig{
+			DefaultCluster: "redis-a",
+			RouteEpoch:     epoch,
+			Rules:          rules,
+		},
+		Limits: config.LimitsConfig{
+			MaxPipelineDepth: 1024,
+			MaxRequestBytes:  1024,
+			MaxResponseBytes: 1024,
+		},
 	}
 }
 

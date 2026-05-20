@@ -1,13 +1,27 @@
 package com.example.redisproxy.controlplane.service;
 
 import com.example.redisproxy.controlplane.model.ProxyConfig;
+import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ConfigService {
     private final AtomicReference<ProxyConfig> current = new AtomicReference<>(defaultConfig());
+    private final CopyOnWriteArrayList<Watcher> watchers = new CopyOnWriteArrayList<>();
+    private final ScheduledExecutorService watcherTimeouts = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "config-watch-timeout");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public ProxyConfig get() {
         return current.get();
@@ -16,7 +30,43 @@ public class ConfigService {
     public ProxyConfig update(ProxyConfig config) {
         validateSemantics(config);
         current.set(config);
+        completeMatchingWatchers(config);
         return config;
+    }
+
+    public CompletableFuture<Optional<ProxyConfig>> watch(long routeEpoch, Duration timeout) {
+        ProxyConfig config = current.get();
+        if (config.getRouting().getRouteEpoch() > routeEpoch) {
+            return CompletableFuture.completedFuture(Optional.of(config));
+        }
+        CompletableFuture<Optional<ProxyConfig>> future = new CompletableFuture<>();
+        Watcher watcher = new Watcher(routeEpoch, future);
+        watchers.add(watcher);
+        watcherTimeouts.schedule(() -> {
+            if (future.complete(Optional.empty())) {
+                watchers.remove(watcher);
+            }
+        }, Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS);
+
+        ProxyConfig latest = current.get();
+        if (latest.getRouting().getRouteEpoch() > routeEpoch && future.complete(Optional.of(latest))) {
+            watchers.remove(watcher);
+        }
+        return future;
+    }
+
+    private void completeMatchingWatchers(ProxyConfig config) {
+        for (Watcher watcher : watchers) {
+            if (config.getRouting().getRouteEpoch() > watcher.routeEpoch()
+                    && watcher.future().complete(Optional.of(config))) {
+                watchers.remove(watcher);
+            }
+        }
+    }
+
+    @PreDestroy
+    public void stop() {
+        watcherTimeouts.shutdownNow();
     }
 
     private static void validateSemantics(ProxyConfig config) {
@@ -28,6 +78,12 @@ public class ConfigService {
         }
         if (!List.of("standalone", "cluster").contains(config.getMode())) {
             throw new IllegalArgumentException("mode must be standalone or cluster");
+        }
+        if (config.getRouting().getRouteEpoch() < 0) {
+            throw new IllegalArgumentException("routing.routeEpoch must be >= 0");
+        }
+        if (config.getRouting().getClusterSlotsRefreshIntervalSeconds() < 0) {
+            throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
         }
         for (ProxyConfig.RouteRule rule : config.getRouting().getRules()) {
             if (!clusterNames.contains(rule.getCluster())) {
@@ -52,5 +108,8 @@ public class ConfigService {
         config.getBackends().setClusters(List.of(cluster));
         config.getRouting().setDefaultCluster("redis-a");
         return config;
+    }
+
+    private record Watcher(long routeEpoch, CompletableFuture<Optional<ProxyConfig>> future) {
     }
 }

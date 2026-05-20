@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
@@ -19,10 +20,30 @@ var clusterSlotsCommand = []byte("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n")
 
 type Router struct {
 	mode           string
+	epoch          int64
 	defaultCluster string
 	clusters       map[string]config.ClusterConfig
 	rules          []config.RouteRuleConfig
 	states         map[string]*clusterState
+}
+
+type Decision struct {
+	Addr    string
+	Cluster string
+	Rule    string
+	Epoch   int64
+}
+
+type SnapshotInfo struct {
+	Epoch          int64                    `json:"epoch"`
+	Mode           string                   `json:"mode"`
+	DefaultCluster string                   `json:"defaultCluster"`
+	RouteClusters  []string                 `json:"routeClusters"`
+	Rules          []config.RouteRuleConfig `json:"rules"`
+}
+
+type Manager struct {
+	current atomic.Value
 }
 
 type clusterState struct {
@@ -42,6 +63,7 @@ func New(cfg *config.Config) (*Router, error) {
 	}
 	return &Router{
 		mode:           cfg.Mode,
+		epoch:          cfg.Routing.RouteEpoch,
 		defaultCluster: cfg.Routing.DefaultCluster,
 		clusters:       clusters,
 		rules:          append([]config.RouteRuleConfig(nil), cfg.Routing.Rules...),
@@ -49,27 +71,126 @@ func New(cfg *config.Config) (*Router, error) {
 	}, nil
 }
 
+func NewManager(cfg *config.Config) (*Manager, error) {
+	rt, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	m := &Manager{}
+	m.current.Store(rt)
+	return m, nil
+}
+
+func (m *Manager) Current() *Router {
+	return m.current.Load().(*Router)
+}
+
+func (m *Manager) Route(req protocol.Request) (string, error) {
+	return m.Current().Route(req)
+}
+
+func (m *Manager) RouteDecision(req protocol.Request) (Decision, error) {
+	return m.Current().RouteDecision(req)
+}
+
+func (m *Manager) UpdateMoved(response []byte, pools *backend.Pools) {
+	m.Current().UpdateMoved(response, pools)
+}
+
+func (m *Manager) RefreshSlots(pools *backend.Pools) error {
+	return m.Current().RefreshSlots(pools)
+}
+
+func (m *Manager) SnapshotInfo() SnapshotInfo {
+	return m.Current().SnapshotInfo()
+}
+
+func (m *Manager) CurrentEpoch() int64 {
+	return m.Current().epoch
+}
+
+func (m *Manager) DefaultNodes() []string {
+	return m.Current().DefaultNodes()
+}
+
+func (m *Manager) RouteClusters() []string {
+	return m.Current().RouteClusters()
+}
+
+func (m *Manager) ClusterSlotCoverage(clusterName string) int {
+	return m.Current().ClusterSlotCoverage(clusterName)
+}
+
+func (m *Manager) SlotCoverage() int {
+	return m.Current().SlotCoverage()
+}
+
+func (m *Manager) ClusterSlotOwners(clusterName string) []string {
+	return m.Current().ClusterSlotOwners(clusterName)
+}
+
+func (m *Manager) ApplyConfig(cfg *config.Config, pools *backend.Pools) (string, error) {
+	config.ApplyDefaults(cfg)
+	if err := cfg.Validate(); err != nil {
+		return "invalid", err
+	}
+	old := m.Current()
+	if cfg.Mode != old.mode {
+		return "runtime_shape", fmt.Errorf("mode changes are not hot reloadable")
+	}
+	if cfg.Routing.RouteEpoch <= old.epoch {
+		return "stale_epoch", fmt.Errorf("routeEpoch %d must be greater than current %d", cfg.Routing.RouteEpoch, old.epoch)
+	}
+	for _, cluster := range cfg.Backends.Clusters {
+		for _, node := range cluster.Nodes {
+			if err := pools.Ensure(node); err != nil {
+				return "backend_ensure", err
+			}
+		}
+	}
+	next, err := New(cfg)
+	if err != nil {
+		return "invalid", err
+	}
+	next.inheritSlots(old)
+	if cfg.Mode == "cluster" {
+		if err := next.RefreshSlots(pools); err != nil {
+			return "slot_refresh", err
+		}
+	}
+	m.current.Store(next)
+	return "success", nil
+}
+
 func (r *Router) Route(req protocol.Request) (string, error) {
-	clusterName := r.selectCluster(req)
+	decision, err := r.RouteDecision(req)
+	if err != nil {
+		return "", err
+	}
+	return decision.Addr, nil
+}
+
+func (r *Router) RouteDecision(req protocol.Request) (Decision, error) {
+	clusterName, ruleName := r.selectCluster(req)
 	cluster, ok := r.clusters[clusterName]
 	if !ok {
-		return "", fmt.Errorf("route cluster %q not found", clusterName)
+		return Decision{}, fmt.Errorf("route cluster %q not found", clusterName)
 	}
 	if len(cluster.Nodes) == 0 {
-		return "", fmt.Errorf("route cluster %q has no backend nodes", clusterName)
+		return Decision{}, fmt.Errorf("route cluster %q has no backend nodes", clusterName)
 	}
 	if len(cluster.Nodes) == 1 || r.mode == "standalone" {
-		return cluster.Nodes[0], nil
+		return Decision{Addr: cluster.Nodes[0], Cluster: clusterName, Rule: ruleName, Epoch: r.epoch}, nil
 	}
 	key, ok := ExtractKey(req.Args)
 	if !ok {
-		return cluster.Nodes[0], nil
+		return Decision{Addr: cluster.Nodes[0], Cluster: clusterName, Rule: ruleName, Epoch: r.epoch}, nil
 	}
 	slot := Slot(key)
 	if addr, ok := r.slotAddr(clusterName, slot); ok {
-		return addr, nil
+		return Decision{Addr: addr, Cluster: clusterName, Rule: ruleName, Epoch: r.epoch}, nil
 	}
-	return cluster.Nodes[slot%len(cluster.Nodes)], nil
+	return Decision{Addr: cluster.Nodes[slot%len(cluster.Nodes)], Cluster: clusterName, Rule: ruleName, Epoch: r.epoch}, nil
 }
 
 func (r *Router) RefreshSlots(pools *backend.Pools) error {
@@ -314,6 +435,16 @@ func (r *Router) RouteClusters() []string {
 	return clusters
 }
 
+func (r *Router) SnapshotInfo() SnapshotInfo {
+	return SnapshotInfo{
+		Epoch:          r.epoch,
+		Mode:           r.mode,
+		DefaultCluster: r.defaultCluster,
+		RouteClusters:  r.RouteClusters(),
+		Rules:          append([]config.RouteRuleConfig(nil), r.rules...),
+	}
+}
+
 func (r *Router) ClusterNodes(clusterName string) []string {
 	cluster, ok := r.clusters[clusterName]
 	if !ok {
@@ -322,10 +453,10 @@ func (r *Router) ClusterNodes(clusterName string) []string {
 	return append([]string(nil), cluster.Nodes...)
 }
 
-func (r *Router) selectCluster(req protocol.Request) string {
+func (r *Router) selectCluster(req protocol.Request) (string, string) {
 	rawKey, ok := RawKey(req.Args)
 	if !ok {
-		return r.defaultCluster
+		return r.defaultCluster, "default"
 	}
 	tag := hashTag(rawKey)
 	for _, rule := range r.rules {
@@ -339,10 +470,24 @@ func (r *Router) selectCluster(req protocol.Request) string {
 			continue
 		}
 		if rule.TrafficPercent >= 100 || int(crc16(rawKey)%100) < rule.TrafficPercent {
-			return rule.Cluster
+			return rule.Cluster, rule.Name
 		}
 	}
-	return r.defaultCluster
+	return r.defaultCluster, "default"
+}
+
+func (r *Router) inheritSlots(old *Router) {
+	for clusterName, state := range r.states {
+		oldState := old.states[clusterName]
+		if oldState == nil {
+			continue
+		}
+		oldState.mu.RLock()
+		state.mu.Lock()
+		state.slotNodes = oldState.slotNodes
+		state.mu.Unlock()
+		oldState.mu.RUnlock()
+	}
 }
 
 func ExtractKey(args [][]byte) ([]byte, bool) {

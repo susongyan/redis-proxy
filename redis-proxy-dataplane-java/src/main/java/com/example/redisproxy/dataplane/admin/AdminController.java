@@ -38,6 +38,11 @@ public class AdminController {
         return properties;
     }
 
+    @GetMapping("/debug/route-snapshot")
+    public RouteResolver.SnapshotInfo routeSnapshot() {
+        return routeResolver.snapshotInfo();
+    }
+
     private boolean ready() {
         if (!"cluster".equals(properties.getMode())) {
             return !routeResolver.defaultNodes().isEmpty() && backendPool.hasActive(routeResolver.defaultNodes().getFirst());

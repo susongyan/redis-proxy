@@ -1,7 +1,10 @@
 package com.example.redisproxy.dataplane.router;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
+import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -63,6 +66,38 @@ class RouteResolverTest {
 
         assertThat(resolver.route(request("GET", "user:1"))).isEqualTo("127.0.0.1:6380");
         assertThat(resolver.route(request("GET", "order:1"))).isEqualTo("127.0.0.1:6379");
+    }
+
+    @Test
+    void applyConfigAcceptsHigherEpochAndRejectsStale() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+        BackendPool backendPool = mock(BackendPool.class);
+
+        ProxyProperties stale = properties("127.0.0.1:6379");
+        stale.getRouting().setRouteEpoch(1);
+        RouteResolver.ApplyResult staleResult = resolver.applyConfig(stale, backendPool);
+        assertThat(staleResult.applied()).isFalse();
+        assertThat(staleResult.result()).isEqualTo("stale_epoch");
+
+        ProxyProperties next = properties("127.0.0.1:6379");
+        ProxyProperties.Cluster gray = new ProxyProperties.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:6380"));
+        next.getBackends().setClusters(List.of(next.getBackends().getClusters().getFirst(), gray));
+        next.getRouting().setRouteEpoch(2);
+        ProxyProperties.RouteRule rule = new ProxyProperties.RouteRule();
+        rule.setName("gray-user");
+        rule.setCluster("redis-b");
+        rule.setKeyPrefix("user:");
+        rule.setTrafficPercent(100);
+        next.getRouting().setRules(List.of(rule));
+
+        RouteResolver.ApplyResult result = resolver.applyConfig(next, backendPool);
+        assertThat(result.applied()).isTrue();
+        assertThat(resolver.currentEpoch()).isEqualTo(2);
+        assertThat(resolver.routeDecision(request("GET", "user:1")).cluster()).isEqualTo("redis-b");
+        verify(backendPool).ensureAll(List.of("127.0.0.1:6380"));
     }
 
     private static RouteResolver resolver(String... nodes) {

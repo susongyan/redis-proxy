@@ -14,6 +14,7 @@ public class ProxyProperties {
     private Backends backends = new Backends();
     private Routing routing = new Routing();
     private Limits limits = new Limits();
+    private ControlPlane controlPlane = new ControlPlane();
 
     public void validate() {
         if (!"standalone".equals(mode) && !"cluster".equals(mode)) {
@@ -24,6 +25,21 @@ public class ProxyProperties {
         }
         if (routing.clusterSlotsRefreshIntervalSeconds < 0) {
             throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
+        }
+        if (routing.routeEpoch < 0) {
+            throw new IllegalArgumentException("routing.routeEpoch must be >= 0");
+        }
+        if (controlPlane.enabled && (controlPlane.url == null || controlPlane.url.isBlank())) {
+            throw new IllegalArgumentException("controlPlane.url is required when controlPlane.enabled=true");
+        }
+        if (controlPlane.pollIntervalSeconds < 0) {
+            throw new IllegalArgumentException("controlPlane.pollIntervalSeconds must be >= 0");
+        }
+        if (controlPlane.watchTimeoutSeconds < 0) {
+            throw new IllegalArgumentException("controlPlane.watchTimeoutSeconds must be >= 0");
+        }
+        if (controlPlane.requestTimeoutMillis < 0) {
+            throw new IllegalArgumentException("controlPlane.requestTimeoutMillis must be >= 0");
         }
         Set<String> clusterNames = new HashSet<>();
         for (Cluster cluster : backends.clusters) {
@@ -65,6 +81,8 @@ public class ProxyProperties {
     public void setRouting(Routing routing) { this.routing = routing; }
     public Limits getLimits() { return limits; }
     public void setLimits(Limits limits) { this.limits = limits; }
+    public ControlPlane getControlPlane() { return controlPlane; }
+    public void setControlPlane(ControlPlane controlPlane) { this.controlPlane = controlPlane; }
 
     public static class Server {
         private String listen = "0.0.0.0:6379";
@@ -142,6 +160,24 @@ public class ProxyProperties {
         public void setHashTag(String hashTag) { this.hashTag = hashTag; }
         public int getTrafficPercent() { return trafficPercent; }
         public void setTrafficPercent(int trafficPercent) { this.trafficPercent = trafficPercent; }
+    }
+
+    public static class ControlPlane {
+        private boolean enabled;
+        private String url;
+        private int pollIntervalSeconds = 5;
+        private int watchTimeoutSeconds = 30;
+        private int requestTimeoutMillis = 1000;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getUrl() { return url; }
+        public void setUrl(String url) { this.url = url; }
+        public int getPollIntervalSeconds() { return pollIntervalSeconds; }
+        public void setPollIntervalSeconds(int pollIntervalSeconds) { this.pollIntervalSeconds = pollIntervalSeconds; }
+        public int getWatchTimeoutSeconds() { return watchTimeoutSeconds; }
+        public void setWatchTimeoutSeconds(int watchTimeoutSeconds) { this.watchTimeoutSeconds = watchTimeoutSeconds; }
+        public int getRequestTimeoutMillis() { return requestTimeoutMillis; }
+        public void setRequestTimeoutMillis(int requestTimeoutMillis) { this.requestTimeoutMillis = requestTimeoutMillis; }
     }
 
     public static class Limits {

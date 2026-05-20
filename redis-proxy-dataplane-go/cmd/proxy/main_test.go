@@ -5,22 +5,24 @@ import (
 	"time"
 )
 
-func TestRefreshLimiterThrottlesMovedRefresh(t *testing.T) {
-	now := time.Unix(100, 0)
-	limiter := newRefreshLimiter(2 * time.Second)
-	limiter.now = func() time.Time {
-		return now
+func TestControlPlaneWatchURLAppendsWatchEndpoint(t *testing.T) {
+	got, err := controlPlaneWatchURL("http://127.0.0.1:8090/api/v1/config", 7, 30*time.Second)
+	if err != nil {
+		t.Fatalf("controlPlaneWatchURL returned error: %v", err)
 	}
+	want := "http://127.0.0.1:8090/api/v1/config/watch?epoch=7&timeoutSeconds=30"
+	if got != want {
+		t.Fatalf("watch url = %q, want %q", got, want)
+	}
+}
 
-	if !limiter.Allow() {
-		t.Fatal("first MOVED refresh trigger should be allowed")
+func TestControlPlaneWatchURLPreservesWatchEndpointAndQuery(t *testing.T) {
+	got, err := controlPlaneWatchURL("http://127.0.0.1:8090/api/v1/config/watch?token=abc", 8, 1500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("controlPlaneWatchURL returned error: %v", err)
 	}
-	if limiter.Allow() {
-		t.Fatal("second MOVED refresh trigger inside throttle window should be dropped")
-	}
-
-	now = now.Add(2 * time.Second)
-	if !limiter.Allow() {
-		t.Fatal("MOVED refresh trigger should be allowed after throttle window")
+	want := "http://127.0.0.1:8090/api/v1/config/watch?epoch=8&timeoutSeconds=1&token=abc"
+	if got != want {
+		t.Fatalf("watch url = %q, want %q", got, want)
 	}
 }

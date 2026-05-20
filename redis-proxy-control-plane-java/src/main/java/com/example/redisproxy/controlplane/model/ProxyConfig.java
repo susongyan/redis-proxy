@@ -76,11 +76,14 @@ public class ProxyConfig {
     public static class Routing {
         @NotBlank private String defaultCluster = "redis-a";
         private long routeEpoch = 1;
+        private int clusterSlotsRefreshIntervalSeconds = 0;
         @Valid private List<RouteRule> rules = new ArrayList<>();
         public String getDefaultCluster() { return defaultCluster; }
         public void setDefaultCluster(String defaultCluster) { this.defaultCluster = defaultCluster; }
         public long getRouteEpoch() { return routeEpoch; }
         public void setRouteEpoch(long routeEpoch) { this.routeEpoch = routeEpoch; }
+        public int getClusterSlotsRefreshIntervalSeconds() { return clusterSlotsRefreshIntervalSeconds; }
+        public void setClusterSlotsRefreshIntervalSeconds(int clusterSlotsRefreshIntervalSeconds) { this.clusterSlotsRefreshIntervalSeconds = clusterSlotsRefreshIntervalSeconds; }
         public List<RouteRule> getRules() { return rules; }
         public void setRules(List<RouteRule> rules) { this.rules = rules; }
     }

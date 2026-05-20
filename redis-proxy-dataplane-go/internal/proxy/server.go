@@ -22,7 +22,7 @@ import (
 
 type Server struct {
 	cfg      *config.Config
-	router   *router.Router
+	router   *router.Manager
 	backends *backend.Pools
 	metrics  *metrics.Registry
 	log      *zap.Logger
@@ -41,7 +41,7 @@ type completion struct {
 	start    time.Time
 }
 
-func NewServer(cfg *config.Config, rt *router.Router, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func()) *Server {
+func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func()) *Server {
 	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved}
 }
 
@@ -151,14 +151,15 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 
-		addr, err := s.router.Route(req)
+		decision, err := s.router.RouteDecision(req)
 		if err != nil {
 			s.metrics.Errors.WithLabelValues("route").Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start})
 			continue
 		}
+		s.metrics.RouteDecisions.WithLabelValues(decision.Cluster, decision.Rule).Inc()
 
-		err = s.backends.DoAsyncAffinity(addr, affinity, req.Raw, func(result backend.Result) {
+		err = s.backends.DoAsyncAffinity(decision.Addr, affinity, req.Raw, func(result backend.Result) {
 			s.enqueueCompletion(completions, clientDone, completion{
 				seq:      current,
 				command:  cmd,

@@ -1,8 +1,8 @@
 package com.example.redisproxy.dataplane.router;
 
+import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
-import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.protocol.RespValue;
 import com.example.redisproxy.dataplane.protocol.RespValueParser;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -29,49 +30,54 @@ public class RouteResolver {
     private static final byte[] CLUSTER_SLOTS =
             "*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n".getBytes(StandardCharsets.US_ASCII);
 
-    private final ProxyProperties properties;
-    private final Map<String, ProxyProperties.Cluster> clusters = new HashMap<>();
+    private final AtomicReference<Snapshot> snapshot;
     private final AtomicInteger slotCoverage = new AtomicInteger();
     private final AtomicLong lastRefreshTimestampSeconds = new AtomicLong();
     private final Map<String, String[]> slotNodes = new ConcurrentHashMap<>();
 
     public RouteResolver(ProxyProperties properties, MeterRegistry registry) {
         properties.validate();
-        this.properties = properties;
-        for (ProxyProperties.Cluster cluster : properties.getBackends().getClusters()) {
-            clusters.put(cluster.getName(), cluster);
-            slotNodes.put(cluster.getName(), new String[SLOTS]);
+        this.snapshot = new AtomicReference<>(new Snapshot(properties, clusters(properties)));
+        for (String clusterName : snapshot.get().clusters().keySet()) {
+            slotNodes.put(clusterName, new String[SLOTS]);
         }
+        slotCoverage.set(clusterSlotCoverage(properties.getRouting().getDefaultCluster()));
         registry.gauge("redis.proxy.cluster.slot.coverage", slotCoverage);
         registry.gauge("redis.proxy.cluster.slot.last.refresh.timestamp.seconds", lastRefreshTimestampSeconds);
-        registry.gauge("redis.proxy.route.epoch", properties.getRouting(), routing -> routing.getRouteEpoch());
+        registry.gauge("redis.proxy.route.epoch", this, RouteResolver::currentEpoch);
     }
 
     public String route(RespRequest request) {
-        String clusterName = selectCluster(request);
-        ProxyProperties.Cluster cluster = clusters.get(clusterName);
+        return routeDecision(request).address();
+    }
+
+    public RouteDecision routeDecision(RespRequest request) {
+        Snapshot current = snapshot.get();
+        SelectedCluster selected = selectCluster(current, request);
+        ProxyProperties.Cluster cluster = current.clusters().get(selected.cluster());
         if (cluster == null) {
-            throw new IllegalArgumentException("route cluster not found: " + clusterName);
+            throw new IllegalArgumentException("route cluster not found: " + selected.cluster());
         }
         List<String> nodes = cluster.getNodes();
-        if (!"cluster".equals(properties.getMode()) || nodes.size() == 1 || request.args().size() < 2) {
-            return nodes.getFirst();
+        if (!"cluster".equals(current.properties().getMode()) || nodes.size() == 1 || request.args().size() < 2) {
+            return new RouteDecision(nodes.getFirst(), selected.cluster(), selected.rule(), currentEpoch());
         }
         int slot = RedisSlot.slot(request.args().get(1));
-        String cached = slotNodes.get(clusterName)[slot];
+        String cached = slotNodes.get(selected.cluster())[slot];
         if (cached != null && !cached.isBlank()) {
-            return cached;
+            return new RouteDecision(cached, selected.cluster(), selected.rule(), currentEpoch());
         }
-        return nodes.get(slot % nodes.size());
+        return new RouteDecision(nodes.get(slot % nodes.size()), selected.cluster(), selected.rule(), currentEpoch());
     }
 
     public void refreshSlots(BackendPool backendPool, Duration timeout) throws Exception {
-        if (!"cluster".equals(properties.getMode())) {
+        Snapshot current = snapshot.get();
+        if (!"cluster".equals(current.properties().getMode())) {
             return;
         }
         Exception refreshError = null;
-        for (String clusterName : clusters.keySet()) {
-            ProxyProperties.Cluster cluster = clusters.get(clusterName);
+        for (String clusterName : current.clusters().keySet()) {
+            ProxyProperties.Cluster cluster = current.clusters().get(clusterName);
             Exception lastError = null;
             boolean refreshed = false;
             for (String seed : cluster.getNodes()) {
@@ -92,11 +98,8 @@ public class RouteResolver {
                     }
                 }
             }
-            if (!refreshed && lastError == null) {
-                lastError = new IllegalStateException("cluster " + clusterName + " slot refresh failed");
-            }
             if (!refreshed) {
-                refreshError = lastError;
+                refreshError = lastError == null ? new IllegalStateException("cluster " + clusterName + " slot refresh failed") : lastError;
             }
         }
         if (refreshError != null) {
@@ -127,14 +130,14 @@ public class RouteResolver {
         String[] next = Arrays.copyOf(current, current.length);
         next[slot] = target.address();
         slotNodes.put(target.clusterName(), next);
-        slotCoverage.set(clusterSlotCoverage(properties.getRouting().getDefaultCluster()));
+        slotCoverage.set(slotCoverage());
         if (backendPool != null) {
             backendPool.ensure(target.address());
         }
     }
 
     public int slotCoverage() {
-        return clusterSlotCoverage(properties.getRouting().getDefaultCluster());
+        return clusterSlotCoverage(snapshot.get().properties().getRouting().getDefaultCluster());
     }
 
     public int clusterSlotCoverage(String clusterName) {
@@ -170,15 +173,16 @@ public class RouteResolver {
     }
 
     public List<String> defaultNodes() {
-        return clusterNodes(properties.getRouting().getDefaultCluster());
+        return clusterNodes(snapshot.get().properties().getRouting().getDefaultCluster());
     }
 
     public List<String> routeClusters() {
+        Snapshot current = snapshot.get();
         Set<String> seen = new HashSet<>();
         List<String> result = new ArrayList<>();
-        result.add(properties.getRouting().getDefaultCluster());
-        seen.add(properties.getRouting().getDefaultCluster());
-        for (ProxyProperties.RouteRule rule : properties.getRouting().getRules()) {
+        result.add(current.properties().getRouting().getDefaultCluster());
+        seen.add(current.properties().getRouting().getDefaultCluster());
+        for (ProxyProperties.RouteRule rule : current.properties().getRouting().getRules()) {
             if (seen.add(rule.getCluster())) {
                 result.add(rule.getCluster());
             }
@@ -187,17 +191,54 @@ public class RouteResolver {
     }
 
     public List<String> clusterNodes(String clusterName) {
-        ProxyProperties.Cluster cluster = clusters.get(clusterName);
+        ProxyProperties.Cluster cluster = snapshot.get().clusters().get(clusterName);
         return cluster == null ? List.of() : List.copyOf(cluster.getNodes());
     }
 
+    public long currentEpoch() {
+        return snapshot.get().properties().getRouting().getRouteEpoch();
+    }
+
+    public SnapshotInfo snapshotInfo() {
+        Snapshot current = snapshot.get();
+        return new SnapshotInfo(
+                current.properties().getRouting().getRouteEpoch(),
+                current.properties().getMode(),
+                current.properties().getRouting().getDefaultCluster(),
+                routeClusters(),
+                List.copyOf(current.properties().getRouting().getRules()));
+    }
+
+    public ApplyResult applyConfig(ProxyProperties next, BackendPool backendPool) {
+        next.validate();
+        Snapshot current = snapshot.get();
+        if (!next.getMode().equals(current.properties().getMode())) {
+            return new ApplyResult("runtime_shape", false, "mode changes are not hot reloadable");
+        }
+        if (next.getRouting().getRouteEpoch() <= current.properties().getRouting().getRouteEpoch()) {
+            return new ApplyResult("stale_epoch", false, "routeEpoch must be greater than current");
+        }
+        for (ProxyProperties.Cluster cluster : next.getBackends().getClusters()) {
+            backendPool.ensureAll(cluster.getNodes());
+            slotNodes.computeIfAbsent(cluster.getName(), ignored -> new String[SLOTS]);
+        }
+        snapshot.set(new Snapshot(next, clusters(next)));
+        slotCoverage.set(slotCoverage());
+        return new ApplyResult("success", true, null);
+    }
+
     String normalizeAddr(String addr) {
-        return normalizeAddr(properties.getRouting().getDefaultCluster(), addr);
+        Snapshot current = snapshot.get();
+        return normalizeAddr(current, current.properties().getRouting().getDefaultCluster(), addr);
     }
 
     String normalizeAddr(String clusterName, String addr) {
+        return normalizeAddr(snapshot.get(), clusterName, addr);
+    }
+
+    private String normalizeAddr(Snapshot current, String clusterName, String addr) {
         HostPort target = HostPort.parse(addr);
-        ProxyProperties.Cluster cluster = clusters.get(clusterName);
+        ProxyProperties.Cluster cluster = current.clusters().get(clusterName);
         if (cluster == null) {
             return target.host() + ":" + target.port();
         }
@@ -211,7 +252,7 @@ public class RouteResolver {
     }
 
     void applyClusterSlots(ByteBuf raw) {
-        applyClusterSlots(properties.getRouting().getDefaultCluster(), raw);
+        applyClusterSlots(snapshot.get().properties().getRouting().getDefaultCluster(), raw);
     }
 
     void applyClusterSlots(String clusterName, ByteBuf raw) {
@@ -232,7 +273,7 @@ public class RouteResolver {
             }
             String host = new String(master.array().get(0).bytes(), StandardCharsets.UTF_8);
             int port = (int) master.array().get(1).integer();
-            String addr = normalizeAddr(clusterName, host + ":" + port);
+            String addr = normalizeAddr(snapshot.get(), clusterName, host + ":" + port);
             start = Math.max(0, start);
             end = Math.min(SLOTS - 1, end);
             for (int slot = start; slot <= end; slot++) {
@@ -240,7 +281,7 @@ public class RouteResolver {
             }
         }
         slotNodes.put(clusterName, next);
-        slotCoverage.set(clusterSlotCoverage(properties.getRouting().getDefaultCluster()));
+        slotCoverage.set(slotCoverage());
         lastRefreshTimestampSeconds.set(System.currentTimeMillis() / 1000);
     }
 
@@ -254,24 +295,14 @@ public class RouteResolver {
         return List.copyOf(seen.keySet());
     }
 
-    private static int countCovered(String[] nodes) {
-        int covered = 0;
-        for (String node : nodes) {
-            if (node != null && !node.isBlank()) {
-                covered++;
-            }
-        }
-        return covered;
-    }
-
-    private String selectCluster(RespRequest request) {
+    private SelectedCluster selectCluster(Snapshot current, RespRequest request) {
         if (request.args().size() < 2) {
-            return properties.getRouting().getDefaultCluster();
+            return new SelectedCluster(current.properties().getRouting().getDefaultCluster(), "default");
         }
         byte[] rawKey = request.args().get(1);
         String key = new String(rawKey, StandardCharsets.UTF_8);
         String hashTag = new String(hashTag(rawKey), StandardCharsets.UTF_8);
-        for (ProxyProperties.RouteRule rule : properties.getRouting().getRules()) {
+        for (ProxyProperties.RouteRule rule : current.properties().getRouting().getRules()) {
             if (rule.getTrafficPercent() <= 0) {
                 continue;
             }
@@ -282,21 +313,40 @@ public class RouteResolver {
                 continue;
             }
             if (rule.getTrafficPercent() >= 100 || RedisSlot.slot(rawKey) % 100 < rule.getTrafficPercent()) {
-                return rule.getCluster();
+                return new SelectedCluster(rule.getCluster(), rule.getName());
             }
         }
-        return properties.getRouting().getDefaultCluster();
+        return new SelectedCluster(current.properties().getRouting().getDefaultCluster(), "default");
     }
 
     private MovedTarget normalizeMovedAddr(String addr) {
-        for (String clusterName : clusters.keySet()) {
-            String normalized = normalizeAddr(clusterName, addr);
-            if (clusters.get(clusterName).getNodes().contains(normalized)) {
+        Snapshot current = snapshot.get();
+        for (String clusterName : current.clusters().keySet()) {
+            String normalized = normalizeAddr(current, clusterName, addr);
+            if (current.clusters().get(clusterName).getNodes().contains(normalized)) {
                 return new MovedTarget(clusterName, normalized);
             }
         }
-        String defaultCluster = properties.getRouting().getDefaultCluster();
-        return new MovedTarget(defaultCluster, normalizeAddr(defaultCluster, addr));
+        String defaultCluster = current.properties().getRouting().getDefaultCluster();
+        return new MovedTarget(defaultCluster, normalizeAddr(current, defaultCluster, addr));
+    }
+
+    private static Map<String, ProxyProperties.Cluster> clusters(ProxyProperties properties) {
+        Map<String, ProxyProperties.Cluster> result = new HashMap<>();
+        for (ProxyProperties.Cluster cluster : properties.getBackends().getClusters()) {
+            result.put(cluster.getName(), cluster);
+        }
+        return Map.copyOf(result);
+    }
+
+    private static int countCovered(String[] nodes) {
+        int covered = 0;
+        for (String node : nodes) {
+            if (node != null && !node.isBlank()) {
+                covered++;
+            }
+        }
+        return covered;
     }
 
     private static byte[] hashTag(byte[] key) {
@@ -323,6 +373,11 @@ public class RouteResolver {
         return key;
     }
 
+    public record RouteDecision(String address, String cluster, String rule, long epoch) {}
+    public record SnapshotInfo(long epoch, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules) {}
+    public record ApplyResult(String result, boolean applied, String error) {}
+    private record Snapshot(ProxyProperties properties, Map<String, ProxyProperties.Cluster> clusters) {}
+    private record SelectedCluster(String cluster, String rule) {}
     private record MovedTarget(String clusterName, String address) {}
 
     private record HostPort(String host, int port) {

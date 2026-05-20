@@ -9,56 +9,65 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig  `yaml:"server"`
-	Admin    AdminConfig   `yaml:"admin"`
-	Mode     string        `yaml:"mode"`
-	Backends BackendConfig `yaml:"backends"`
-	Routing  RoutingConfig `yaml:"routing"`
-	Limits   LimitsConfig  `yaml:"limits"`
+	Server       ServerConfig       `yaml:"server" json:"server"`
+	Admin        AdminConfig        `yaml:"admin" json:"admin"`
+	Mode         string             `yaml:"mode" json:"mode"`
+	Backends     BackendConfig      `yaml:"backends" json:"backends"`
+	Routing      RoutingConfig      `yaml:"routing" json:"routing"`
+	Limits       LimitsConfig       `yaml:"limits" json:"limits"`
+	ControlPlane ControlPlaneConfig `yaml:"controlPlane" json:"controlPlane"`
 }
 
 type ServerConfig struct {
-	Listen string `yaml:"listen"`
+	Listen string `yaml:"listen" json:"listen"`
 }
 
 type AdminConfig struct {
-	Listen string `yaml:"listen"`
+	Listen string `yaml:"listen" json:"listen"`
 }
 
 type BackendConfig struct {
-	Clusters []ClusterConfig `yaml:"clusters"`
+	Clusters []ClusterConfig `yaml:"clusters" json:"clusters"`
 }
 
 type ClusterConfig struct {
-	Name  string     `yaml:"name"`
-	Nodes []string   `yaml:"nodes"`
-	Pool  PoolConfig `yaml:"pool"`
+	Name  string     `yaml:"name" json:"name"`
+	Nodes []string   `yaml:"nodes" json:"nodes"`
+	Pool  PoolConfig `yaml:"pool" json:"pool"`
 }
 
 type PoolConfig struct {
-	ConnectionsPerNode       int `yaml:"connectionsPerNode"`
-	MaxInflightPerConnection int `yaml:"maxInflightPerConnection"`
+	ConnectionsPerNode       int `yaml:"connectionsPerNode" json:"connectionsPerNode"`
+	MaxInflightPerConnection int `yaml:"maxInflightPerConnection" json:"maxInflightPerConnection"`
 }
 
 type RoutingConfig struct {
-	DefaultCluster                     string            `yaml:"defaultCluster"`
-	RouteEpoch                         int64             `yaml:"routeEpoch"`
-	ClusterSlotsRefreshIntervalSeconds int               `yaml:"clusterSlotsRefreshIntervalSeconds"`
-	Rules                              []RouteRuleConfig `yaml:"rules"`
+	DefaultCluster                     string            `yaml:"defaultCluster" json:"defaultCluster"`
+	RouteEpoch                         int64             `yaml:"routeEpoch" json:"routeEpoch"`
+	ClusterSlotsRefreshIntervalSeconds int               `yaml:"clusterSlotsRefreshIntervalSeconds" json:"clusterSlotsRefreshIntervalSeconds"`
+	Rules                              []RouteRuleConfig `yaml:"rules" json:"rules"`
 }
 
 type RouteRuleConfig struct {
-	Name           string `yaml:"name"`
-	Cluster        string `yaml:"cluster"`
-	KeyPrefix      string `yaml:"keyPrefix"`
-	HashTag        string `yaml:"hashTag"`
-	TrafficPercent int    `yaml:"trafficPercent"`
+	Name           string `yaml:"name" json:"name"`
+	Cluster        string `yaml:"cluster" json:"cluster"`
+	KeyPrefix      string `yaml:"keyPrefix" json:"keyPrefix"`
+	HashTag        string `yaml:"hashTag" json:"hashTag"`
+	TrafficPercent int    `yaml:"trafficPercent" json:"trafficPercent"`
 }
 
 type LimitsConfig struct {
-	MaxPipelineDepth int `yaml:"maxPipelineDepth"`
-	MaxRequestBytes  int `yaml:"maxRequestBytes"`
-	MaxResponseBytes int `yaml:"maxResponseBytes"`
+	MaxPipelineDepth int `yaml:"maxPipelineDepth" json:"maxPipelineDepth"`
+	MaxRequestBytes  int `yaml:"maxRequestBytes" json:"maxRequestBytes"`
+	MaxResponseBytes int `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+}
+
+type ControlPlaneConfig struct {
+	Enabled              bool   `yaml:"enabled" json:"enabled"`
+	URL                  string `yaml:"url" json:"url"`
+	PollIntervalSeconds  int    `yaml:"pollIntervalSeconds" json:"pollIntervalSeconds"`
+	WatchTimeoutSeconds  int    `yaml:"watchTimeoutSeconds" json:"watchTimeoutSeconds"`
+	RequestTimeoutMillis int    `yaml:"requestTimeoutMillis" json:"requestTimeoutMillis"`
 }
 
 func Load(path string) (*Config, error) {
@@ -70,8 +79,12 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
-	applyDefaults(&cfg)
+	ApplyDefaults(&cfg)
 	return &cfg, cfg.Validate()
+}
+
+func ApplyDefaults(cfg *Config) {
+	applyDefaults(cfg)
 }
 
 func applyDefaults(cfg *Config) {
@@ -93,6 +106,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Limits.MaxResponseBytes == 0 {
 		cfg.Limits.MaxResponseBytes = 100 * 1024 * 1024
 	}
+	if cfg.ControlPlane.PollIntervalSeconds == 0 {
+		cfg.ControlPlane.PollIntervalSeconds = 5
+	}
+	if cfg.ControlPlane.WatchTimeoutSeconds == 0 {
+		cfg.ControlPlane.WatchTimeoutSeconds = 30
+	}
+	if cfg.ControlPlane.RequestTimeoutMillis == 0 {
+		cfg.ControlPlane.RequestTimeoutMillis = 1000
+	}
 }
 
 func (c *Config) Validate() error {
@@ -107,6 +129,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Routing.ClusterSlotsRefreshIntervalSeconds < 0 {
 		return errors.New("routing.clusterSlotsRefreshIntervalSeconds must be >= 0")
+	}
+	if c.Routing.RouteEpoch < 0 {
+		return errors.New("routing.routeEpoch must be >= 0")
+	}
+	if c.ControlPlane.Enabled && c.ControlPlane.URL == "" {
+		return errors.New("controlPlane.url is required when controlPlane.enabled=true")
+	}
+	if c.ControlPlane.PollIntervalSeconds < 0 {
+		return errors.New("controlPlane.pollIntervalSeconds must be >= 0")
+	}
+	if c.ControlPlane.WatchTimeoutSeconds < 0 {
+		return errors.New("controlPlane.watchTimeoutSeconds must be >= 0")
+	}
+	if c.ControlPlane.RequestTimeoutMillis < 0 {
+		return errors.New("controlPlane.requestTimeoutMillis must be >= 0")
 	}
 	if len(c.Backends.Clusters) == 0 {
 		return errors.New("at least one backend cluster is required")

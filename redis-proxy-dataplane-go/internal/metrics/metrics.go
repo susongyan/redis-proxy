@@ -21,6 +21,10 @@ type Registry struct {
 	Ask                   prometheus.Counter
 	SlotCoverage          prometheus.Gauge
 	RouteEpoch            prometheus.Gauge
+	RouteDecisions        *prometheus.CounterVec
+	RouteSnapshotUpdates  *prometheus.CounterVec
+	RouteSnapshotRejects  *prometheus.CounterVec
+	RouteSnapshotTime     prometheus.Gauge
 	SlotRefreshes         *prometheus.CounterVec
 	SlotRefreshTime       prometheus.Gauge
 	BackendReconnects     *prometheus.CounterVec
@@ -45,6 +49,10 @@ func NewRegistry() *Registry {
 	r.Ask = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_ask_total", Help: "ASK responses"})
 	r.SlotCoverage = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_coverage", Help: "Number of Redis Cluster slots with cached backend mapping"})
 	r.RouteEpoch = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_route_epoch", Help: "Current route epoch from local config"})
+	r.RouteDecisions = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_route_decisions_total", Help: "Route decisions by cluster and rule"}, []string{"cluster", "rule"})
+	r.RouteSnapshotUpdates = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_route_snapshot_update_total", Help: "Route snapshot update attempts by result"}, []string{"result"})
+	r.RouteSnapshotRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_route_snapshot_rejected_total", Help: "Rejected route snapshots by reason"}, []string{"reason"})
+	r.RouteSnapshotTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_route_snapshot_last_success_timestamp_seconds", Help: "Unix timestamp of the last successful route snapshot update"})
 	r.SlotRefreshes = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_cluster_slot_refresh_total", Help: "Cluster slot refresh attempts by result"}, []string{"result"})
 	r.SlotRefreshTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_last_refresh_timestamp_seconds", Help: "Unix timestamp of the last successful cluster slot refresh"})
 	r.BackendReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_backend_reconnect_total", Help: "Backend reconnect attempts by Redis node and result"}, []string{"node", "result"})
@@ -68,6 +76,10 @@ func NewRegistry() *Registry {
 		r.Ask,
 		r.SlotCoverage,
 		r.RouteEpoch,
+		r.RouteDecisions,
+		r.RouteSnapshotUpdates,
+		r.RouteSnapshotRejects,
+		r.RouteSnapshotTime,
 		r.SlotRefreshes,
 		r.SlotRefreshTime,
 		r.BackendReconnects,

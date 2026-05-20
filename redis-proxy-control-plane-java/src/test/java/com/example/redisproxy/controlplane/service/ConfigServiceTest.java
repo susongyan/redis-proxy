@@ -4,7 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.redisproxy.controlplane.model.ProxyConfig;
+import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class ConfigServiceTest {
@@ -45,6 +49,20 @@ class ConfigServiceTest {
     }
 
     @Test
+    void rejectsInvalidRoutingEpochAndRefreshInterval() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        config.getRouting().setRouteEpoch(-1);
+        assertThatThrownBy(() -> service.update(config))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        config.getRouting().setRouteEpoch(1);
+        config.getRouting().setClusterSlotsRefreshIntervalSeconds(-1);
+        assertThatThrownBy(() -> service.update(config))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void acceptsValidRouteRule() {
         ConfigService service = new ConfigService();
         ProxyConfig config = service.get();
@@ -60,5 +78,39 @@ class ConfigServiceTest {
         config.getRouting().setRules(List.of(rule));
 
         assertThat(service.update(config)).isSameAs(config);
+    }
+
+    @Test
+    void watchReturnsImmediatelyWhenCurrentEpochIsNewer() throws Exception {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        config.getRouting().setRouteEpoch(2);
+        service.update(config);
+
+        Optional<ProxyConfig> watched = service.watch(1, Duration.ofSeconds(1)).get(1, TimeUnit.SECONDS);
+
+        assertThat(watched).containsSame(config);
+    }
+
+    @Test
+    void watchCompletesWhenHigherEpochIsPublished() throws Exception {
+        ConfigService service = new ConfigService();
+        CompletableFuture<Optional<ProxyConfig>> watch = service.watch(1, Duration.ofSeconds(5));
+        assertThat(watch).isNotDone();
+
+        ProxyConfig config = service.get();
+        config.getRouting().setRouteEpoch(2);
+        service.update(config);
+
+        assertThat(watch.get(1, TimeUnit.SECONDS)).containsSame(config);
+    }
+
+    @Test
+    void watchTimesOutWhenEpochDoesNotAdvance() throws Exception {
+        ConfigService service = new ConfigService();
+
+        Optional<ProxyConfig> watched = service.watch(1, Duration.ofMillis(20)).get(1, TimeUnit.SECONDS);
+
+        assertThat(watched).isEmpty();
     }
 }

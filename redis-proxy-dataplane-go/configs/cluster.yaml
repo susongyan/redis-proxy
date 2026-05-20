@@ -25,6 +25,13 @@ routing:
   routeEpoch: 1
   clusterSlotsRefreshIntervalSeconds: 30
 
+controlPlane:
+  enabled: false
+  url: "http://127.0.0.1:8090/api/v1/config"
+  pollIntervalSeconds: 5
+  watchTimeoutSeconds: 30
+  requestTimeoutMillis: 1000
+
 limits:
   maxPipelineDepth: 1024
   maxRequestBytes: 10485760

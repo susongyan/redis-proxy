@@ -168,6 +168,13 @@ limits:
   maxPipelineDepth: 1024
   maxRequestBytes: 10485760
   maxResponseBytes: 104857600
+
+controlPlane:
+  enabled: false
+  url: "http://127.0.0.1:8090/api/v1/config"
+  pollIntervalSeconds: 5
+  watchTimeoutSeconds: 30
+  requestTimeoutMillis: 1000
 ```
 
 配置原则：
@@ -176,7 +183,9 @@ limits:
 - 数据面运行时使用本地不可变快照。
 - `routeEpoch` 表示当前路由快照版本；数据面按快照进行原子路由选择，不在单请求中混用多个版本。
 - `routing.rules` 按顺序匹配，支持 `keyPrefix` / `hashTag` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
-- 控制面生成同结构配置，后续再支持动态发布。
+- 控制面生成同结构配置；开启 `controlPlane.enabled` 后，数据面通过 `/api/v1/config/watch` 长轮询消费新快照。
+- `controlPlane.pollIntervalSeconds` 在长轮询模式下表示异常后的重试间隔；正常无变更时控制面返回 `204`，数据面立即续订下一次 watch。
+- `controlPlane.watchTimeoutSeconds` 表示单次 watch 的服务端等待窗口；`requestTimeoutMillis` 是客户端请求超时余量。
 - 所有切换和治理规则必须可审计、可回滚。
 
 ## 本地运行
@@ -392,7 +401,7 @@ Slot cache 刷新策略：
 
 第二阶段后半：路由发布基础
 
-状态：本地快照能力已完成，动态发布和回滚待实现。
+状态：长轮询式动态路由快照发布已完成；显式回滚、发布审计和灰度发布平台化仍待实现。
 
 已完成：
 
@@ -402,14 +411,19 @@ Slot cache 刷新策略：
 4. cluster 模式下，Go / Java 数据面会按参与路由的 cluster 维护 slot cache 和 readiness 判断。
 5. 控制面校验 route rule 引用的 cluster、流量百分比和 key 匹配条件，避免生成不可执行配置。
 6. 单元测试已覆盖 Go / Java 灰度路由选择和控制面 route rule 合法性校验。
+7. Java 控制面提供 `GET /api/v1/config/watch?epoch=<current>&timeoutSeconds=<n>` 长轮询接口；无更新返回 `204`，有更大 `routeEpoch` 立即返回新配置。
+8. Go / Java 数据面均从控制面长轮询 route snapshot，只接受单调递增的 `routeEpoch`，并用原子快照替换保证单请求只读一个版本。
+9. Go / Java 数据面新增 `/debug/route-snapshot`，可查看当前生效 epoch、defaultCluster、rules 和参与路由的 clusters。
+10. Go / Java 数据面新增 route epoch、snapshot update/reject、last success timestamp 和 route decision 指标。
+11. 已完成动态切换 E2E：发布 epoch=2 后，Go / Java 均无需等待固定 poll interval 即切换快照，`user:*` 路由到 `redis-b`，默认 key 保持 `redis-a`。
 
 待完成：
 
-1. 动态加载控制面发布的路由快照，并以 `routeEpoch` 做单调版本校验和原子切换。
-2. 支持显式回滚到上一版 routeEpoch。
-3. 支持灰度发布状态查询，例如当前 epoch、规则命中量、按 cluster 的 route decision 指标。
+1. 支持显式回滚语义；工程上仍应生成更大的 `routeEpoch`，内容回到旧规则。
+2. 支持发布审计、发布人、发布原因、diff 和审批状态。
+3. 支持灰度发布状态查询和报表，例如当前 epoch、规则命中量、按 cluster 的 route decision 指标。
 4. 补充 ASK 临时路由的完整执行语义，例如向临时 owner 发送 `ASKING` 后转发一次请求。
-5. 将 cluster failover E2E 固化为可重复脚本，减少手工验证步骤。
+5. 将 cluster failover 和动态路由切换 E2E 固化为可重复脚本，减少手工验证步骤。
 
 第三阶段：治理能力
 

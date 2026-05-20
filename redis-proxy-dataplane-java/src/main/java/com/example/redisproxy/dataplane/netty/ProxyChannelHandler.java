@@ -4,6 +4,7 @@ import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.netty.ClientResponseSequencer.PendingResponse;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import com.example.redisproxy.dataplane.router.ClusterSlotRefresher;
+import com.example.redisproxy.dataplane.router.RouteResolver.RouteDecision;
 import com.example.redisproxy.dataplane.router.RouteResolver;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -49,8 +50,9 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         pendingClientResponses.incrementAndGet();
         registry.counter("redis.proxy.requests", "command", command).increment();
         try {
-            String backend = routeResolver.route(request);
-            backendPool.doRequest(backend, request.raw(), ctx.channel().id().asLongText().hashCode()).whenComplete((response, error) ->
+            RouteDecision decision = routeResolver.routeDecision(request);
+            registry.counter("redis.proxy.route.decisions", "cluster", decision.cluster(), "rule", decision.rule()).increment();
+            backendPool.doRequest(decision.address(), request.raw(), ctx.channel().id().asLongText().hashCode()).whenComplete((response, error) ->
                     ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(response, error, command, sample), pending -> flush(ctx, pending))));
         } catch (Exception e) {
             ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(null, e, command, sample), pending -> flush(ctx, pending)));
