@@ -418,13 +418,17 @@ Slot cache 刷新策略：
 9. Go / Java 数据面新增 `/debug/route-snapshot`，可查看当前生效 epoch、defaultCluster、rules 和参与路由的 clusters。
 10. Go / Java 数据面新增 route epoch、snapshot update/reject、last success timestamp 和 route decision 指标。
 11. 已完成动态切换 E2E：发布 epoch=2 后，Go / Java 均无需等待固定 poll interval 即切换快照，`user:*` 路由到 `redis-b`，默认 key 保持 `redis-a`。
+12. Java 控制面提供显式发布治理 API：`POST /api/v1/config/publish`、`POST /api/v1/config/rollback`、版本历史、版本详情、diff 和 route status 查询。
+13. 控制面发布历史记录 versionId、routeEpoch、operator、reason、action、approvalStatus 和完整 config snapshot。
+14. 回滚采用更大 `routeEpoch` 表达：复制历史版本内容并设置为 `currentEpoch + 1`，不会要求数据面接受旧 epoch。
+15. 控制面 `/api/v1/routes/status` 提供当前发布期望态；灰度真实命中量仍以数据面 Prometheus route decision 指标为准。
+16. 已固化 `scripts/e2e-dynamic-route.sh`、`scripts/e2e-asking.sh` 和 `scripts/e2e-cluster-failover.sh`。
 
 待完成：
 
-1. 支持显式回滚语义；工程上仍应生成更大的 `routeEpoch`，内容回到旧规则。
-2. 支持发布审计、发布人、发布原因、diff 和审批状态。
-3. 支持灰度发布状态查询和报表，例如当前 epoch、规则命中量、按 cluster 的 route decision 指标。
-4. 将 cluster failover、ASKING 临时路由和动态路由切换 E2E 固化为可重复脚本，减少手工验证步骤。
+1. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
+2. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
+3. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
 
 第三阶段：治理能力
 

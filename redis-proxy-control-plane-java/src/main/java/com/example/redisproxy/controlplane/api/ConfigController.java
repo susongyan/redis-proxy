@@ -1,12 +1,20 @@
 package com.example.redisproxy.controlplane.api;
 
 import com.example.redisproxy.controlplane.model.ProxyConfig;
+import com.example.redisproxy.controlplane.model.PublishRequest;
+import com.example.redisproxy.controlplane.model.RollbackRequest;
+import com.example.redisproxy.controlplane.model.ConfigVersion;
+import com.example.redisproxy.controlplane.model.ConfigDiff;
+import com.example.redisproxy.controlplane.model.RouteStatus;
 import com.example.redisproxy.controlplane.service.ConfigService;
 import jakarta.validation.Valid;
 import java.time.Duration;
+import java.util.List;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -55,5 +63,35 @@ public class ConfigController {
     @PutMapping(value = "/api/v1/config", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ProxyConfig updateConfig(@Valid @RequestBody ProxyConfig config) {
         return configService.update(config);
+    }
+
+    @PostMapping(value = "/api/v1/config/publish", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ConfigVersion publishConfig(@Valid @RequestBody PublishRequest request) {
+        return configService.publish(request);
+    }
+
+    @PostMapping(value = "/api/v1/config/rollback", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ConfigVersion rollbackConfig(@Valid @RequestBody RollbackRequest request) {
+        return configService.rollback(request);
+    }
+
+    @GetMapping("/api/v1/config/versions")
+    public List<ConfigVersion> versions() {
+        return configService.versions();
+    }
+
+    @GetMapping("/api/v1/config/versions/{versionId}")
+    public ConfigVersion version(@PathVariable long versionId) {
+        return configService.version(versionId);
+    }
+
+    @GetMapping("/api/v1/config/diff")
+    public ConfigDiff diff(@RequestParam("from") long fromVersionId, @RequestParam("to") long toVersionId) {
+        return configService.diff(fromVersionId, toVersionId);
+    }
+
+    @GetMapping("/api/v1/routes/status")
+    public RouteStatus routeStatus() {
+        return configService.routeStatus();
     }
 }
