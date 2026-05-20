@@ -160,18 +160,43 @@ func (s *Server) handle(conn net.Conn) {
 		s.metrics.RouteDecisions.WithLabelValues(decision.Cluster, decision.Rule).Inc()
 
 		err = s.backends.DoAsyncAffinity(decision.Addr, affinity, req.Raw, func(result backend.Result) {
-			s.enqueueCompletion(completions, clientDone, completion{
-				seq:      current,
-				command:  cmd,
-				response: result.Response,
-				err:      result.Err,
-				start:    start,
-			})
+			s.completeBackendResult(completions, clientDone, current, cmd, start, decision, affinity, req.Raw, result, false)
 		})
 		if err != nil {
 			s.metrics.Errors.WithLabelValues("backend").Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start})
 		}
+	}
+}
+
+func (s *Server) completeBackendResult(completions chan<- completion, clientDone <-chan struct{}, seq uint64, command string, start time.Time, decision router.Decision, affinity uint64, raw []byte, result backend.Result, askRetried bool) {
+	if result.Err != nil || !bytes.HasPrefix(result.Response, []byte("-ASK ")) {
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, err: result.Err, start: start})
+		return
+	}
+	if askRetried {
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, start: start})
+		return
+	}
+	s.metrics.Ask.Inc()
+	addr, err := s.router.AskTarget(result.Response, decision.Cluster, s.backends)
+	if err != nil {
+		s.metrics.AskRedirects.WithLabelValues("error").Inc()
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start})
+		return
+	}
+	if err := s.backends.DoAsyncAsking(addr, affinity, raw, func(retry backend.Result) {
+		if retry.Err != nil {
+			s.metrics.AskRedirects.WithLabelValues("error").Inc()
+		} else if bytes.HasPrefix(retry.Response, []byte("-ASK ")) {
+			s.metrics.AskRedirects.WithLabelValues("loop_prevented").Inc()
+		} else {
+			s.metrics.AskRedirects.WithLabelValues("success").Inc()
+		}
+		s.completeBackendResult(completions, clientDone, seq, command, start, decision, affinity, raw, retry, true)
+	}); err != nil {
+		s.metrics.AskRedirects.WithLabelValues("error").Inc()
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start})
 	}
 }
 

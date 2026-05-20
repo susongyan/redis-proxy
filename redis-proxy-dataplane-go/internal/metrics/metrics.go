@@ -19,6 +19,7 @@ type Registry struct {
 	ClientPending         prometheus.Gauge
 	Moved                 prometheus.Counter
 	Ask                   prometheus.Counter
+	AskRedirects          *prometheus.CounterVec
 	SlotCoverage          prometheus.Gauge
 	RouteEpoch            prometheus.Gauge
 	RouteDecisions        *prometheus.CounterVec
@@ -47,6 +48,7 @@ func NewRegistry() *Registry {
 	r.ClientPending = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_client_pending_responses", Help: "Pending client responses"})
 	r.Moved = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_moved_total", Help: "MOVED responses"})
 	r.Ask = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_ask_total", Help: "ASK responses"})
+	r.AskRedirects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_ask_redirect_total", Help: "ASKING retry attempts by result"}, []string{"result"})
 	r.SlotCoverage = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_coverage", Help: "Number of Redis Cluster slots with cached backend mapping"})
 	r.RouteEpoch = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_route_epoch", Help: "Current route epoch from local config"})
 	r.RouteDecisions = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_route_decisions_total", Help: "Route decisions by cluster and rule"}, []string{"cluster", "rule"})
@@ -74,6 +76,7 @@ func NewRegistry() *Registry {
 		r.ClientPending,
 		r.Moved,
 		r.Ask,
+		r.AskRedirects,
 		r.SlotCoverage,
 		r.RouteEpoch,
 		r.RouteDecisions,

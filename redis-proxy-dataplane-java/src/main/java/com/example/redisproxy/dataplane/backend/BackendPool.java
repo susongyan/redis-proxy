@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -35,6 +36,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class BackendPool implements AutoCloseable {
+    private static final byte[] ASKING = "*1\r\n$6\r\nASKING\r\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final int INITIAL_RECONNECT_DELAY_SECONDS = 1;
     private static final int MAX_RECONNECT_DELAY_SECONDS = 30;
     private static final int GLOBAL_RECONNECT_LIMIT = 64;
@@ -78,12 +80,27 @@ public class BackendPool implements AutoCloseable {
     }
 
     public CompletableFuture<ByteBuf> doRequest(String address, ByteBuf request, int affinity) {
+        return doRequest(address, request, affinity, 0);
+    }
+
+    public CompletableFuture<ByteBuf> doRequestWithAsking(String address, ByteBuf request, int affinity) {
+        ByteBuf combined = Unpooled.buffer(ASKING.length + request.readableBytes());
+        combined.writeBytes(ASKING);
+        combined.writeBytes(request, request.readerIndex(), request.readableBytes());
+        try {
+            return doRequest(address, combined, affinity, 1);
+        } finally {
+            combined.release();
+        }
+    }
+
+    private CompletableFuture<ByteBuf> doRequest(String address, ByteBuf request, int affinity, int skipResponses) {
         List<BackendConnection> connections = pools.computeIfAbsent(address, ignored -> connectPool(address, 1));
         int start = Math.floorMod(affinity, connections.size());
         for (int i = 0; i < connections.size(); i++) {
             BackendConnection connection = connections.get((start + i) % connections.size());
             if (connection.isActive()) {
-                return connection.send(request);
+                return connection.send(request, skipResponses);
             }
         }
         return CompletableFuture.failedFuture(new IllegalStateException("backend unavailable: " + address));
@@ -285,7 +302,7 @@ public class BackendPool implements AutoCloseable {
             return inflight.get();
         }
 
-        private CompletableFuture<ByteBuf> send(ByteBuf request) {
+        private CompletableFuture<ByteBuf> send(ByteBuf request, int skipResponses) {
             int maxInflight = properties.getBackends().getClusters().stream()
                     .flatMap(cluster -> cluster.getNodes().stream()
                             .filter(address::equals)
@@ -298,7 +315,7 @@ public class BackendPool implements AutoCloseable {
             }
             totalInflight.incrementAndGet();
             CompletableFuture<ByteBuf> future = new CompletableFuture<>();
-            PendingRequest pendingRequest = new PendingRequest(future, Timer.start(registry));
+            PendingRequest pendingRequest = new PendingRequest(future, Timer.start(registry), skipResponses);
             ByteBuf outbound = request.retainedDuplicate();
             channel.eventLoop().execute(() -> {
                 pending.add(pendingRequest);
@@ -315,11 +332,17 @@ public class BackendPool implements AutoCloseable {
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             ByteBuf response = (ByteBuf) msg;
-            PendingRequest request = pending.poll();
+            PendingRequest request = pending.peek();
             if (request == null) {
                 response.release();
                 return;
             }
+            if (request.skipResponses > 0) {
+                request.skipResponses--;
+                response.release();
+                return;
+            }
+            pending.poll();
             request.sample.stop(registry.timer("redis.proxy.backend.latency", "backend", address));
             inflight.decrementAndGet();
             totalInflight.decrementAndGet();
@@ -360,5 +383,15 @@ public class BackendPool implements AutoCloseable {
         }
     }
 
-    private record PendingRequest(CompletableFuture<ByteBuf> future, Timer.Sample sample) {}
+    private static final class PendingRequest {
+        private final CompletableFuture<ByteBuf> future;
+        private final Timer.Sample sample;
+        private int skipResponses;
+
+        private PendingRequest(CompletableFuture<ByteBuf> future, Timer.Sample sample, int skipResponses) {
+            this.future = future;
+            this.sample = sample;
+            this.skipResponses = skipResponses;
+        }
+    }
 }

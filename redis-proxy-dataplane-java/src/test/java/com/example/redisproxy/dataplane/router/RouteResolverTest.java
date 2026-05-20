@@ -41,6 +41,21 @@ class RouteResolverTest {
     }
 
     @Test
+    void askTargetNormalizesWithinOriginalCluster() {
+        ProxyProperties properties = properties("127.0.0.1:7100");
+        ProxyProperties.Cluster gray = new ProxyProperties.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:7200"));
+        properties.getBackends().setClusters(List.of(properties.getBackends().getClusters().getFirst(), gray));
+        RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+
+        String target = resolver.askTarget(Unpooled.copiedBuffer("-ASK 42 redis-proxy-cluster-7200:7200\r\n", StandardCharsets.US_ASCII), "redis-b", null);
+
+        assertThat(target).isEqualTo("127.0.0.1:7200");
+        assertThat(resolver.clusterSlotCoverage("redis-b")).isZero();
+    }
+
+    @Test
     void movedUpdatesSingleSlotCache() {
         RouteResolver resolver = resolver("127.0.0.1:7100", "127.0.0.1:7101");
         resolver.updateMoved(Unpooled.copiedBuffer("-MOVED 42 127.0.0.1:7101\r\n", StandardCharsets.US_ASCII), null);

@@ -108,32 +108,52 @@ public class RouteResolver {
     }
 
     public void updateMoved(ByteBuf response, BackendPool backendPool) {
-        String text = response.toString(response.readerIndex(), response.readableBytes(), StandardCharsets.US_ASCII);
-        if (!text.startsWith("-MOVED ")) {
+        Redirection redirection = parseRedirection(response, "MOVED");
+        if (redirection == null) {
             return;
         }
-        String[] fields = text.split("\\s+");
-        if (fields.length < 3) {
-            return;
-        }
-        int slot;
-        try {
-            slot = Integer.parseInt(fields[1]);
-        } catch (NumberFormatException e) {
-            return;
-        }
-        if (slot < 0 || slot >= SLOTS) {
-            return;
-        }
-        MovedTarget target = normalizeMovedAddr(fields[2]);
+        MovedTarget target = normalizeMovedAddr(redirection.address());
         String[] current = slotNodes.get(target.clusterName());
         String[] next = Arrays.copyOf(current, current.length);
-        next[slot] = target.address();
+        next[redirection.slot()] = target.address();
         slotNodes.put(target.clusterName(), next);
         slotCoverage.set(slotCoverage());
         if (backendPool != null) {
             backendPool.ensure(target.address());
         }
+    }
+
+    public String askTarget(ByteBuf response, String clusterName, BackendPool backendPool) {
+        Redirection redirection = parseRedirection(response, "ASK");
+        if (redirection == null) {
+            throw new IllegalArgumentException("invalid ASK response");
+        }
+        String address = normalizeAddr(snapshot.get(), clusterName, redirection.address());
+        if (backendPool != null) {
+            backendPool.ensure(address);
+        }
+        return address;
+    }
+
+    private Redirection parseRedirection(ByteBuf response, String kind) {
+        String text = response.toString(response.readerIndex(), response.readableBytes(), StandardCharsets.US_ASCII);
+        if (!text.startsWith("-" + kind + " ")) {
+            return null;
+        }
+        String[] fields = text.split("\\s+");
+        if (fields.length < 3) {
+            return null;
+        }
+        int slot;
+        try {
+            slot = Integer.parseInt(fields[1]);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        if (slot < 0 || slot >= SLOTS) {
+            return null;
+        }
+        return new Redirection(slot, fields[2]);
     }
 
     public int slotCoverage() {
@@ -379,6 +399,7 @@ public class RouteResolver {
     private record Snapshot(ProxyProperties properties, Map<String, ProxyProperties.Cluster> clusters) {}
     private record SelectedCluster(String cluster, String rule) {}
     private record MovedTarget(String clusterName, String address) {}
+    private record Redirection(int slot, String address) {}
 
     private record HostPort(String host, int port) {
         static HostPort parse(String value) {

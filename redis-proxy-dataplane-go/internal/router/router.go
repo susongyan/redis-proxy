@@ -97,6 +97,10 @@ func (m *Manager) UpdateMoved(response []byte, pools *backend.Pools) {
 	m.Current().UpdateMoved(response, pools)
 }
 
+func (m *Manager) AskTarget(response []byte, clusterName string, pools *backend.Pools) (string, error) {
+	return m.Current().AskTarget(response, clusterName, pools)
+}
+
 func (m *Manager) RefreshSlots(pools *backend.Pools) error {
 	return m.Current().RefreshSlots(pools)
 }
@@ -235,23 +239,54 @@ func (r *Router) RefreshSlots(pools *backend.Pools) error {
 }
 
 func (r *Router) UpdateMoved(response []byte, pools *backend.Pools) {
-	text := string(response)
-	if !strings.HasPrefix(text, "-MOVED ") {
+	target, ok := parseRedirection(response, "MOVED")
+	if !ok {
 		return
 	}
-	fields := strings.Fields(text)
-	if len(fields) < 3 {
-		return
-	}
-	slot, err := strconv.Atoi(fields[1])
-	if err != nil || slot < 0 || slot >= Slots {
-		return
-	}
-	clusterName, addr := r.normalizeMovedAddr(fields[2])
-	r.setSlot(clusterName, slot, addr)
+	clusterName, addr := r.normalizeMovedAddr(target.Addr)
+	r.setSlot(clusterName, target.Slot, addr)
 	if pools != nil {
 		_ = pools.Ensure(addr)
 	}
+}
+
+func (r *Router) AskTarget(response []byte, clusterName string, pools *backend.Pools) (string, error) {
+	target, ok := parseRedirection(response, "ASK")
+	if !ok {
+		return "", fmt.Errorf("invalid ASK response")
+	}
+	if target.Slot < 0 || target.Slot >= Slots {
+		return "", fmt.Errorf("invalid ASK slot %d", target.Slot)
+	}
+	addr := r.normalizeAddr(clusterName, target.Addr)
+	if pools != nil {
+		if err := pools.Ensure(addr); err != nil {
+			return "", err
+		}
+	}
+	return addr, nil
+}
+
+type redirectionTarget struct {
+	Slot int
+	Addr string
+}
+
+func parseRedirection(response []byte, kind string) (redirectionTarget, bool) {
+	text := string(response)
+	prefix := "-" + kind + " "
+	if !strings.HasPrefix(text, prefix) {
+		return redirectionTarget{}, false
+	}
+	fields := strings.Fields(text)
+	if len(fields) < 3 {
+		return redirectionTarget{}, false
+	}
+	slot, err := strconv.Atoi(fields[1])
+	if err != nil || slot < 0 || slot >= Slots {
+		return redirectionTarget{}, false
+	}
+	return redirectionTarget{Slot: slot, Addr: fields[2]}, true
 }
 
 func (r *Router) SlotCoverage() int {

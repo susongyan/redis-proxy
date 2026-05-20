@@ -1,11 +1,14 @@
 package backend
 
 import (
+	"bufio"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
+	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
 	"go.uber.org/zap"
 )
 
@@ -136,5 +139,77 @@ func TestReconnectInactiveOnceBacksOffAfterFailure(t *testing.T) {
 	}
 	if old.reconnectDelayMS.Load() <= int64(initialReconnectDelay/time.Millisecond) {
 		t.Fatal("reconnect delay did not increase")
+	}
+}
+
+func TestDoAsyncAskingSkipsAskingResponse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	seen := make(chan []string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		first, err := protocol.ReadFrameRaw(br, 1024)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("+OK\r\n"))
+		second, err := protocol.ReadFrameRaw(br, 1024)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("$3\r\nbar\r\n"))
+		seen <- []string{string(first), string(second)}
+	}()
+
+	cfg := &config.Config{
+		Mode: "standalone",
+		Backends: config.BackendConfig{Clusters: []config.ClusterConfig{{
+			Name:  "redis-a",
+			Nodes: []string{ln.Addr().String()},
+			Pool:  config.PoolConfig{ConnectionsPerNode: 1, MaxInflightPerConnection: 8},
+		}}},
+		Limits:  config.LimitsConfig{MaxResponseBytes: 1024},
+		Routing: config.RoutingConfig{DefaultCluster: "redis-a"},
+	}
+	pools, err := NewPools(cfg, metrics.NewRegistry(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pools.Close()
+
+	done := make(chan Result, 1)
+	if err := pools.DoAsyncAsking(ln.Addr().String(), 0, []byte("*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"), func(result Result) { done <- result }); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case result := <-done:
+		if result.Err != nil {
+			t.Fatal(result.Err)
+		}
+		if string(result.Response) != "$3\r\nbar\r\n" {
+			t.Fatalf("response=%q", result.Response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ASKING response")
+	}
+	select {
+	case frames := <-seen:
+		if frames[0] != "*1\r\n$6\r\nASKING\r\n" {
+			t.Fatalf("first frame=%q", frames[0])
+		}
+		if frames[1] != "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n" {
+			t.Fatalf("second frame=%q", frames[1])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backend did not receive expected frames")
 	}
 }

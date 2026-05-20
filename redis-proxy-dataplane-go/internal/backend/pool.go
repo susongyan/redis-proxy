@@ -33,9 +33,10 @@ type Result struct {
 type Callback func(Result)
 
 type request struct {
-	payload []byte
-	cb      Callback
-	start   time.Time
+	payload       []byte
+	cb            Callback
+	start         time.Time
+	skipResponses int
 }
 
 type Client struct {
@@ -156,16 +157,28 @@ func (p *Pools) DoAsync(addr string, payload []byte, cb Callback) error {
 		p.reg.BackendUnavailable.WithLabelValues(addr, "no_active_connection").Inc()
 		return ErrBackendUnavailable
 	}
-	return client.send(payload, cb)
+	return client.send(payload, 0, cb)
 }
 
 func (p *Pools) DoAsyncAffinity(addr string, affinity uint64, payload []byte, cb Callback) error {
+	return p.doAsyncAffinity(addr, affinity, payload, 0, cb)
+}
+
+func (p *Pools) DoAsyncAsking(addr string, affinity uint64, payload []byte, cb Callback) error {
+	asking := []byte("*1\r\n$6\r\nASKING\r\n")
+	combined := make([]byte, 0, len(asking)+len(payload))
+	combined = append(combined, asking...)
+	combined = append(combined, payload...)
+	return p.doAsyncAffinity(addr, affinity, combined, 1, cb)
+}
+
+func (p *Pools) doAsyncAffinity(addr string, affinity uint64, payload []byte, skipResponses int, cb Callback) error {
 	client := p.selectClientByAffinity(addr, affinity)
 	if client == nil {
 		p.reg.BackendUnavailable.WithLabelValues(addr, "no_active_connection").Inc()
 		return ErrBackendUnavailable
 	}
-	return client.send(payload, cb)
+	return client.send(payload, skipResponses, cb)
 }
 
 func (p *Pools) selectClient(addr string) *Client {
@@ -391,7 +404,7 @@ func (c *Client) isActive() bool {
 	return c.active.Load()
 }
 
-func (c *Client) send(payload []byte, cb Callback) error {
+func (c *Client) send(payload []byte, skipResponses int, cb Callback) error {
 	if !c.isActive() {
 		c.reg.BackendUnavailable.WithLabelValues(c.addr, "inactive").Inc()
 		return ErrBackendUnavailable
@@ -399,7 +412,7 @@ func (c *Client) send(payload []byte, cb Callback) error {
 	c.inflight.Add(1)
 	c.reg.BackendInflight.Inc()
 	c.reg.BackendInflightByNode.WithLabelValues(c.addr).Inc()
-	req := request{payload: payload, cb: cb, start: time.Now()}
+	req := request{payload: payload, cb: cb, start: time.Now(), skipResponses: skipResponses}
 	select {
 	case c.requests <- req:
 		return nil
@@ -440,19 +453,28 @@ func (c *Client) writeLoop() {
 }
 
 func (c *Client) readLoop() {
+	var current *request
 	for {
 		resp, err := protocol.ReadFrameRaw(c.br, c.maxResponseBytes)
 		if err != nil {
 			c.close()
-			c.failQueued(err)
+			c.failQueued(err, current)
 			return
 		}
-		select {
-		case req := <-c.pending:
-			c.complete(req, nil, resp)
-		case <-c.done:
-			return
+		if current == nil {
+			select {
+			case req := <-c.pending:
+				current = &req
+			case <-c.done:
+				return
+			}
 		}
+		if current.skipResponses > 0 {
+			current.skipResponses--
+			continue
+		}
+		c.complete(*current, nil, resp)
+		current = nil
 	}
 }
 
@@ -466,7 +488,10 @@ func (c *Client) complete(req request, err error, resp []byte) {
 	req.cb(Result{Response: resp, Err: err})
 }
 
-func (c *Client) failQueued(err error) {
+func (c *Client) failQueued(err error, current *request) {
+	if current != nil {
+		c.complete(*current, err, nil)
+	}
 	for {
 		select {
 		case req := <-c.pending:

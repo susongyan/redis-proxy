@@ -52,8 +52,9 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         try {
             RouteDecision decision = routeResolver.routeDecision(request);
             registry.counter("redis.proxy.route.decisions", "cluster", decision.cluster(), "rule", decision.rule()).increment();
+            ByteBuf retryRaw = request.raw().retainedDuplicate();
             backendPool.doRequest(decision.address(), request.raw(), ctx.channel().id().asLongText().hashCode()).whenComplete((response, error) ->
-                    ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(response, error, command, sample), pending -> flush(ctx, pending))));
+                    ctx.executor().execute(() -> completeBackendResult(ctx, sequencer, sequence, command, sample, decision, retryRaw, response, error, false)));
         } catch (Exception e) {
             ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(null, e, command, sample), pending -> flush(ctx, pending)));
         } finally {
@@ -72,6 +73,42 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.decrementAndGet();
         super.channelInactive(ctx);
+    }
+
+    private void completeBackendResult(ChannelHandlerContext ctx, ClientResponseSequencer sequencer, long sequence, String command, Timer.Sample sample, RouteDecision decision, ByteBuf retryRaw, ByteBuf response, Throwable error, boolean askRetried) {
+        if (error != null || !startsWith(response, "-ASK ")) {
+            retryRaw.release();
+            sequencer.complete(sequence, new PendingResponse(response, error, command, sample), pending -> flush(ctx, pending));
+            return;
+        }
+        if (askRetried) {
+            retryRaw.release();
+            sequencer.complete(sequence, new PendingResponse(response, null, command, sample), pending -> flush(ctx, pending));
+            return;
+        }
+        ask.increment();
+        String address;
+        try {
+            address = routeResolver.askTarget(response, decision.cluster(), backendPool);
+        } catch (Exception e) {
+            response.release();
+            retryRaw.release();
+            registry.counter("redis.proxy.ask.redirect", "result", "error").increment();
+            sequencer.complete(sequence, new PendingResponse(null, e, command, sample), pending -> flush(ctx, pending));
+            return;
+        }
+        response.release();
+        backendPool.doRequestWithAsking(address, retryRaw, ctx.channel().id().asLongText().hashCode()).whenComplete((retryResponse, retryError) ->
+                ctx.executor().execute(() -> {
+                    if (retryError != null) {
+                        registry.counter("redis.proxy.ask.redirect", "result", "error").increment();
+                    } else if (startsWith(retryResponse, "-ASK ")) {
+                        registry.counter("redis.proxy.ask.redirect", "result", "loop_prevented").increment();
+                    } else {
+                        registry.counter("redis.proxy.ask.redirect", "result", "success").increment();
+                    }
+                    completeBackendResult(ctx, sequencer, sequence, command, sample, decision, retryRaw, retryResponse, retryError, true);
+                }));
     }
 
     private void flush(ChannelHandlerContext ctx, PendingResponse pending) {

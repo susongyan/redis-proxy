@@ -351,6 +351,7 @@ Slot cache 刷新策略：
 - `backend_reconnect_total{node,result}`：按 Redis node 和结果统计重连次数。
 - `backend_unavailable_total{node,reason}`：按 Redis node 和原因统计 backend 不可用。
 - `backend_inflight{node}`：按 Redis node 统计后端 inflight 请求。
+- `ask_redirect_total{result}`：按结果统计 `ASKING` 临时路由重试，`success` 表示透明转发成功，`error` 表示临时 owner 不可用，`loop_prevented` 表示二次 ASK 被直接返回客户端。
 - `cluster_slot_coverage`：slot cache 覆盖数量，正常应为 16384。
 - `cluster_slot_refresh_total{result}`：`CLUSTER SLOTS` 刷新成功和失败次数。
 
@@ -398,6 +399,7 @@ Slot cache 刷新策略：
 14. 已完成 Go / Java standalone 停启恢复 E2E：Redis 停止时请求快速失败，Redis 恢复后 proxy 不重启恢复服务。
 15. 已完成 Go / Java `7100-7105` cluster-local smoke、master 故障、Redis Cluster failover 和 degraded refresh E2E。
 16. 已补充单元测试覆盖 `ASK` 不污染长期 slot cache、`MOVED` refresh 限频触发、backend reconnect 指标不为负和连接槽位替换。
+17. Go / Java 数据面已支持 `ASKING` 临时路由：收到 `ASK` 后向临时 owner 同连接发送 `ASKING` + 原请求，跳过 `+OK` 后把真实响应返回客户端，且不污染长期 slot cache。
 
 第二阶段后半：路由发布基础
 
@@ -422,8 +424,7 @@ Slot cache 刷新策略：
 1. 支持显式回滚语义；工程上仍应生成更大的 `routeEpoch`，内容回到旧规则。
 2. 支持发布审计、发布人、发布原因、diff 和审批状态。
 3. 支持灰度发布状态查询和报表，例如当前 epoch、规则命中量、按 cluster 的 route decision 指标。
-4. 补充 ASK 临时路由的完整执行语义，例如向临时 owner 发送 `ASKING` 后转发一次请求。
-5. 将 cluster failover 和动态路由切换 E2E 固化为可重复脚本，减少手工验证步骤。
+4. 将 cluster failover、ASKING 临时路由和动态路由切换 E2E 固化为可重复脚本，减少手工验证步骤。
 
 第三阶段：治理能力
 

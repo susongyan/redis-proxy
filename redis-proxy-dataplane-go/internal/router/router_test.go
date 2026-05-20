@@ -91,6 +91,28 @@ func TestAskDoesNotUpdateSlotCache(t *testing.T) {
 	}
 }
 
+func TestAskTargetNormalizesWithinOriginalCluster(t *testing.T) {
+	rt := &Router{
+		mode:           "cluster",
+		defaultCluster: "redis-a",
+		clusters: map[string]config.ClusterConfig{
+			"redis-a": {Name: "redis-a", Nodes: []string{"127.0.0.1:7000"}},
+			"redis-b": {Name: "redis-b", Nodes: []string{"127.0.0.1:7100"}},
+		},
+		states: map[string]*clusterState{"redis-a": {}, "redis-b": {}},
+	}
+	addr, err := rt.AskTarget([]byte("-ASK 42 redis-proxy-cluster-7100:7100\r\n"), "redis-b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "127.0.0.1:7100" {
+		t.Fatalf("ask target=%q", addr)
+	}
+	if got := rt.ClusterSlotCoverage("redis-b"); got != 0 {
+		t.Fatalf("ASK polluted slot cache, coverage=%d", got)
+	}
+}
+
 func TestNormalizeAddrMapsClusterContainerHostnameByPort(t *testing.T) {
 	rt := &Router{
 		mode:           "cluster",
