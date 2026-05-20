@@ -149,12 +149,14 @@ func observeRoutingState(cfg *config.Config, rt *router.Router, reg *metrics.Reg
 }
 
 func clusterDegraded(rt *router.Router, pools *backend.Pools) bool {
-	if rt.SlotCoverage() != router.Slots {
-		return true
-	}
-	for _, owner := range rt.SlotOwners() {
-		if !pools.HasActive(owner) {
+	for _, clusterName := range rt.RouteClusters() {
+		if rt.ClusterSlotCoverage(clusterName) != router.Slots {
 			return true
+		}
+		for _, owner := range rt.ClusterSlotOwners(clusterName) {
+			if !pools.HasActive(owner) {
+				return true
+			}
 		}
 	}
 	return false

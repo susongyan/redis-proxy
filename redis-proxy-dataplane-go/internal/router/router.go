@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -17,61 +18,99 @@ const Slots = 16384
 var clusterSlotsCommand = []byte("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n")
 
 type Router struct {
-	mode      string
-	cluster   config.ClusterConfig
-	slotMu    sync.RWMutex
+	mode           string
+	defaultCluster string
+	clusters       map[string]config.ClusterConfig
+	rules          []config.RouteRuleConfig
+	states         map[string]*clusterState
+}
+
+type clusterState struct {
+	mu        sync.RWMutex
 	slotNodes [Slots]string
 }
 
 func New(cfg *config.Config) (*Router, error) {
+	clusters := make(map[string]config.ClusterConfig, len(cfg.Backends.Clusters))
+	states := make(map[string]*clusterState, len(cfg.Backends.Clusters))
 	for _, cluster := range cfg.Backends.Clusters {
-		if cluster.Name == cfg.Routing.DefaultCluster {
-			return &Router{mode: cfg.Mode, cluster: cluster}, nil
-		}
+		clusters[cluster.Name] = cluster
+		states[cluster.Name] = &clusterState{}
 	}
-	return nil, fmt.Errorf("default cluster %q not found", cfg.Routing.DefaultCluster)
+	if _, ok := clusters[cfg.Routing.DefaultCluster]; !ok {
+		return nil, fmt.Errorf("default cluster %q not found", cfg.Routing.DefaultCluster)
+	}
+	return &Router{
+		mode:           cfg.Mode,
+		defaultCluster: cfg.Routing.DefaultCluster,
+		clusters:       clusters,
+		rules:          append([]config.RouteRuleConfig(nil), cfg.Routing.Rules...),
+		states:         states,
+	}, nil
 }
 
 func (r *Router) Route(req protocol.Request) (string, error) {
-	if len(r.cluster.Nodes) == 1 || r.mode == "standalone" {
-		return r.cluster.Nodes[0], nil
+	clusterName := r.selectCluster(req)
+	cluster, ok := r.clusters[clusterName]
+	if !ok {
+		return "", fmt.Errorf("route cluster %q not found", clusterName)
+	}
+	if len(cluster.Nodes) == 0 {
+		return "", fmt.Errorf("route cluster %q has no backend nodes", clusterName)
+	}
+	if len(cluster.Nodes) == 1 || r.mode == "standalone" {
+		return cluster.Nodes[0], nil
 	}
 	key, ok := ExtractKey(req.Args)
 	if !ok {
-		return r.cluster.Nodes[0], nil
+		return cluster.Nodes[0], nil
 	}
 	slot := Slot(key)
-	if addr, ok := r.slotAddr(slot); ok {
+	if addr, ok := r.slotAddr(clusterName, slot); ok {
 		return addr, nil
 	}
-	return r.cluster.Nodes[slot%len(r.cluster.Nodes)], nil
+	return cluster.Nodes[slot%len(cluster.Nodes)], nil
 }
 
 func (r *Router) RefreshSlots(pools *backend.Pools) error {
-	if r.mode != "cluster" || len(r.cluster.Nodes) == 0 {
+	if r.mode != "cluster" {
 		return nil
 	}
-	var lastErr error
-	for _, seed := range r.cluster.Nodes {
-		resp, err := pools.Do(seed, clusterSlotsCommand, 0)
-		if err != nil {
-			lastErr = err
+	var refreshErr error
+	for clusterName, cluster := range r.clusters {
+		if len(cluster.Nodes) == 0 {
 			continue
 		}
-		slots, err := r.parseClusterSlots(resp)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		for _, addr := range slots {
-			if addr == "" {
+		var lastErr error
+		refreshed := false
+		for _, seed := range cluster.Nodes {
+			resp, err := pools.Do(seed, clusterSlotsCommand, 0)
+			if err != nil {
+				lastErr = err
 				continue
 			}
-			_ = pools.Ensure(addr)
+			slots, err := r.parseClusterSlotsFor(clusterName, resp)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			for _, addr := range slots {
+				if addr == "" {
+					continue
+				}
+				_ = pools.Ensure(addr)
+			}
+			refreshed = true
+			break
 		}
-		return nil
+		if !refreshed {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("cluster %q slot refresh failed", clusterName)
+			}
+			refreshErr = lastErr
+		}
 	}
-	return lastErr
+	return refreshErr
 }
 
 func (r *Router) UpdateMoved(response []byte, pools *backend.Pools) {
@@ -87,18 +126,26 @@ func (r *Router) UpdateMoved(response []byte, pools *backend.Pools) {
 	if err != nil || slot < 0 || slot >= Slots {
 		return
 	}
-	addr := r.normalizeAddr(fields[2])
-	r.setSlot(slot, addr)
+	clusterName, addr := r.normalizeMovedAddr(fields[2])
+	r.setSlot(clusterName, slot, addr)
 	if pools != nil {
 		_ = pools.Ensure(addr)
 	}
 }
 
 func (r *Router) SlotCoverage() int {
-	r.slotMu.RLock()
-	defer r.slotMu.RUnlock()
+	return r.ClusterSlotCoverage(r.defaultCluster)
+}
+
+func (r *Router) ClusterSlotCoverage(clusterName string) int {
+	state := r.states[clusterName]
+	if state == nil {
+		return 0
+	}
+	state.mu.RLock()
+	defer state.mu.RUnlock()
 	covered := 0
-	for _, addr := range r.slotNodes {
+	for _, addr := range state.slotNodes {
 		if addr != "" {
 			covered++
 		}
@@ -107,11 +154,30 @@ func (r *Router) SlotCoverage() int {
 }
 
 func (r *Router) SlotOwners() []string {
-	r.slotMu.RLock()
-	defer r.slotMu.RUnlock()
+	owners := []string{}
 	seen := map[string]bool{}
-	owners := make([]string, 0, len(r.cluster.Nodes))
-	for _, addr := range r.slotNodes {
+	for _, clusterName := range r.RouteClusters() {
+		for _, owner := range r.ClusterSlotOwners(clusterName) {
+			if seen[owner] {
+				continue
+			}
+			seen[owner] = true
+			owners = append(owners, owner)
+		}
+	}
+	return owners
+}
+
+func (r *Router) ClusterSlotOwners(clusterName string) []string {
+	state := r.states[clusterName]
+	if state == nil {
+		return nil
+	}
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	seen := map[string]bool{}
+	owners := make([]string, 0, len(r.clusters[clusterName].Nodes))
+	for _, addr := range state.slotNodes {
 		if addr == "" || seen[addr] {
 			continue
 		}
@@ -122,10 +188,14 @@ func (r *Router) SlotOwners() []string {
 }
 
 func (r *Router) DefaultNodes() []string {
-	return append([]string(nil), r.cluster.Nodes...)
+	return r.ClusterNodes(r.defaultCluster)
 }
 
 func (r *Router) parseClusterSlots(raw []byte) (map[int]string, error) {
+	return r.parseClusterSlotsFor(r.defaultCluster, raw)
+}
+
+func (r *Router) parseClusterSlotsFor(clusterName string, raw []byte) (map[int]string, error) {
 	value, err := protocol.ParseValue(raw)
 	if err != nil {
 		return nil, err
@@ -147,7 +217,7 @@ func (r *Router) parseClusterSlots(raw []byte) (map[int]string, error) {
 		}
 		host := string(master.Array[0].Bytes)
 		port := int(master.Array[1].Int)
-		addr := r.normalizeAddr(net.JoinHostPort(host, strconv.Itoa(port)))
+		addr := r.normalizeAddr(clusterName, net.JoinHostPort(host, strconv.Itoa(port)))
 		if start < 0 {
 			start = 0
 		}
@@ -159,13 +229,17 @@ func (r *Router) parseClusterSlots(raw []byte) (map[int]string, error) {
 			seen[slot] = addr
 		}
 	}
-	r.slotMu.Lock()
-	r.slotNodes = next
-	r.slotMu.Unlock()
+	state := r.states[clusterName]
+	if state == nil {
+		return nil, fmt.Errorf("cluster %q not found", clusterName)
+	}
+	state.mu.Lock()
+	state.slotNodes = next
+	state.mu.Unlock()
 	return seen, nil
 }
 
-func (r *Router) normalizeAddr(addr string) string {
+func (r *Router) normalizeAddr(clusterName string, addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		parts := strings.Split(addr, ":")
@@ -176,7 +250,7 @@ func (r *Router) normalizeAddr(addr string) string {
 			return addr
 		}
 	}
-	for _, node := range r.cluster.Nodes {
+	for _, node := range r.clusters[clusterName].Nodes {
 		_, nodePort, err := net.SplitHostPort(node)
 		if err != nil {
 			continue
@@ -188,30 +262,102 @@ func (r *Router) normalizeAddr(addr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-func (r *Router) slotAddr(slot int) (string, bool) {
+func (r *Router) normalizeMovedAddr(addr string) (string, string) {
+	for clusterName := range r.clusters {
+		normalized := r.normalizeAddr(clusterName, addr)
+		for _, node := range r.clusters[clusterName].Nodes {
+			if normalized == node {
+				return clusterName, normalized
+			}
+		}
+	}
+	return r.defaultCluster, r.normalizeAddr(r.defaultCluster, addr)
+}
+
+func (r *Router) slotAddr(clusterName string, slot int) (string, bool) {
 	if slot < 0 || slot >= Slots {
 		return "", false
 	}
-	r.slotMu.RLock()
-	addr := r.slotNodes[slot]
-	r.slotMu.RUnlock()
+	state := r.states[clusterName]
+	if state == nil {
+		return "", false
+	}
+	state.mu.RLock()
+	addr := state.slotNodes[slot]
+	state.mu.RUnlock()
 	return addr, addr != ""
 }
 
-func (r *Router) setSlot(slot int, addr string) {
+func (r *Router) setSlot(clusterName string, slot int, addr string) {
 	if slot < 0 || slot >= Slots {
 		return
 	}
-	r.slotMu.Lock()
-	r.slotNodes[slot] = addr
-	r.slotMu.Unlock()
+	state := r.states[clusterName]
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.slotNodes[slot] = addr
+	state.mu.Unlock()
+}
+
+func (r *Router) RouteClusters() []string {
+	seen := map[string]bool{r.defaultCluster: true}
+	clusters := []string{r.defaultCluster}
+	for _, rule := range r.rules {
+		if seen[rule.Cluster] {
+			continue
+		}
+		seen[rule.Cluster] = true
+		clusters = append(clusters, rule.Cluster)
+	}
+	return clusters
+}
+
+func (r *Router) ClusterNodes(clusterName string) []string {
+	cluster, ok := r.clusters[clusterName]
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), cluster.Nodes...)
+}
+
+func (r *Router) selectCluster(req protocol.Request) string {
+	rawKey, ok := RawKey(req.Args)
+	if !ok {
+		return r.defaultCluster
+	}
+	tag := hashTag(rawKey)
+	for _, rule := range r.rules {
+		if rule.TrafficPercent <= 0 {
+			continue
+		}
+		if rule.KeyPrefix != "" && !bytes.HasPrefix(rawKey, []byte(rule.KeyPrefix)) {
+			continue
+		}
+		if rule.HashTag != "" && string(tag) != rule.HashTag {
+			continue
+		}
+		if rule.TrafficPercent >= 100 || int(crc16(rawKey)%100) < rule.TrafficPercent {
+			return rule.Cluster
+		}
+	}
+	return r.defaultCluster
 }
 
 func ExtractKey(args [][]byte) ([]byte, bool) {
+	key, ok := RawKey(args)
+	if !ok {
+		return nil, false
+	}
+	return hashTag(key), true
+}
+
+func RawKey(args [][]byte) ([]byte, bool) {
 	if len(args) < 2 {
 		return nil, false
 	}
-	return hashTag(args[1]), true
+	return args[1], true
 }
 
 func hashTag(key []byte) []byte {

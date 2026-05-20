@@ -28,3 +28,43 @@ func TestValidateRejectsNegativeClusterSlotRefreshInterval(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestValidateRejectsRouteRuleUnknownCluster(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routing.Rules = []RouteRuleConfig{{
+		Name:           "bad",
+		Cluster:        "missing",
+		KeyPrefix:      "user:",
+		TrafficPercent: 10,
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateAcceptsRouteRule(t *testing.T) {
+	cfg := validConfig()
+	cfg.Backends.Clusters = append(cfg.Backends.Clusters, ClusterConfig{Name: "redis-b", Nodes: []string{"127.0.0.1:7001"}})
+	cfg.Routing.Rules = []RouteRuleConfig{{
+		Name:           "gray",
+		Cluster:        "redis-b",
+		HashTag:        "tenant-a",
+		TrafficPercent: 25,
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validConfig() Config {
+	return Config{
+		Server: ServerConfig{Listen: "127.0.0.1:6379"},
+		Admin:  AdminConfig{Listen: "127.0.0.1:8080"},
+		Mode:   "cluster",
+		Backends: BackendConfig{Clusters: []ClusterConfig{{
+			Name:  "redis-a",
+			Nodes: []string{"127.0.0.1:7000"},
+		}}},
+		Routing: RoutingConfig{DefaultCluster: "redis-a"},
+	}
+}

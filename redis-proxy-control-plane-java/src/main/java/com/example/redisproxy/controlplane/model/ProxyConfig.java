@@ -76,10 +76,31 @@ public class ProxyConfig {
     public static class Routing {
         @NotBlank private String defaultCluster = "redis-a";
         private long routeEpoch = 1;
+        @Valid private List<RouteRule> rules = new ArrayList<>();
         public String getDefaultCluster() { return defaultCluster; }
         public void setDefaultCluster(String defaultCluster) { this.defaultCluster = defaultCluster; }
         public long getRouteEpoch() { return routeEpoch; }
         public void setRouteEpoch(long routeEpoch) { this.routeEpoch = routeEpoch; }
+        public List<RouteRule> getRules() { return rules; }
+        public void setRules(List<RouteRule> rules) { this.rules = rules; }
+    }
+
+    public static class RouteRule {
+        @NotBlank private String name;
+        @NotBlank private String cluster;
+        private String keyPrefix;
+        private String hashTag;
+        private int trafficPercent;
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getCluster() { return cluster; }
+        public void setCluster(String cluster) { this.cluster = cluster; }
+        public String getKeyPrefix() { return keyPrefix; }
+        public void setKeyPrefix(String keyPrefix) { this.keyPrefix = keyPrefix; }
+        public String getHashTag() { return hashTag; }
+        public void setHashTag(String hashTag) { this.hashTag = hashTag; }
+        public int getTrafficPercent() { return trafficPercent; }
+        public void setTrafficPercent(int trafficPercent) { this.trafficPercent = trafficPercent; }
     }
 
     public static class Limits {

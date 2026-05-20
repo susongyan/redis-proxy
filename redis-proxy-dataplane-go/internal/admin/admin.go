@@ -39,12 +39,14 @@ func ready(cfg *config.Config, rt *router.Router, pools *backend.Pools) bool {
 		nodes := rt.DefaultNodes()
 		return len(nodes) > 0 && pools.HasActive(nodes[0])
 	}
-	if rt.SlotCoverage() != router.Slots {
-		return false
-	}
-	for _, owner := range rt.SlotOwners() {
-		if !pools.HasActive(owner) {
+	for _, clusterName := range rt.RouteClusters() {
+		if rt.ClusterSlotCoverage(clusterName) != router.Slots {
 			return false
+		}
+		for _, owner := range rt.ClusterSlotOwners(clusterName) {
+			if !pools.HasActive(owner) {
+				return false
+			}
 		}
 	}
 	return true

@@ -95,12 +95,14 @@ public class ClusterSlotRefresher {
         if (!"cluster".equals(properties.getMode())) {
             return false;
         }
-        if (routeResolver.slotCoverage() != 16384) {
-            return true;
-        }
-        for (String owner : routeResolver.slotOwners()) {
-            if (!backendPool.hasActive(owner)) {
+        for (String clusterName : routeResolver.routeClusters()) {
+            if (routeResolver.clusterSlotCoverage(clusterName) != 16384) {
                 return true;
+            }
+            for (String owner : routeResolver.clusterSlotOwners(clusterName)) {
+                if (!backendPool.hasActive(owner)) {
+                    return true;
+                }
             }
         }
         return false;

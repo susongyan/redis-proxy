@@ -20,13 +20,27 @@ public class ConfigService {
     }
 
     private static void validateSemantics(ProxyConfig config) {
-        boolean found = config.getBackends().getClusters().stream()
-                .anyMatch(cluster -> cluster.getName().equals(config.getRouting().getDefaultCluster()));
-        if (!found) {
+        List<String> clusterNames = config.getBackends().getClusters().stream()
+                .map(ProxyConfig.Cluster::getName)
+                .toList();
+        if (!clusterNames.contains(config.getRouting().getDefaultCluster())) {
             throw new IllegalArgumentException("routing.defaultCluster does not exist in backends.clusters");
         }
         if (!List.of("standalone", "cluster").contains(config.getMode())) {
             throw new IllegalArgumentException("mode must be standalone or cluster");
+        }
+        for (ProxyConfig.RouteRule rule : config.getRouting().getRules()) {
+            if (!clusterNames.contains(rule.getCluster())) {
+                throw new IllegalArgumentException("routing rule " + rule.getName() + " references unknown cluster");
+            }
+            if (rule.getTrafficPercent() < 0 || rule.getTrafficPercent() > 100) {
+                throw new IllegalArgumentException("routing rule " + rule.getName() + " trafficPercent must be between 0 and 100");
+            }
+            boolean hasKeyPrefix = rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank();
+            boolean hasHashTag = rule.getHashTag() != null && !rule.getHashTag().isBlank();
+            if (!hasKeyPrefix && !hasHashTag) {
+                throw new IllegalArgumentException("routing rule " + rule.getName() + " must set keyPrefix or hashTag");
+            }
         }
     }
 

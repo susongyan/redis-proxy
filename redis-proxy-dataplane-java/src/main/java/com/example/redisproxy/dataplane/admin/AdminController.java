@@ -42,12 +42,14 @@ public class AdminController {
         if (!"cluster".equals(properties.getMode())) {
             return !routeResolver.defaultNodes().isEmpty() && backendPool.hasActive(routeResolver.defaultNodes().getFirst());
         }
-        if (routeResolver.slotCoverage() != 16384) {
-            return false;
-        }
-        for (String owner : routeResolver.slotOwners()) {
-            if (!backendPool.hasActive(owner)) {
+        for (String clusterName : routeResolver.routeClusters()) {
+            if (routeResolver.clusterSlotCoverage(clusterName) != 16384) {
                 return false;
+            }
+            for (String owner : routeResolver.clusterSlotOwners(clusterName)) {
+                if (!backendPool.hasActive(owner)) {
+                    return false;
+                }
             }
         }
         return true;

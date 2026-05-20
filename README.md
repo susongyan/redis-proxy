@@ -145,11 +145,24 @@ backends:
       pool:
         connectionsPerNode: 16
         maxInflightPerConnection: 4096
+    - name: "redis-b"
+      nodes:
+        - "127.0.0.1:7100"
+        - "127.0.0.1:7101"
+        - "127.0.0.1:7102"
+      pool:
+        connectionsPerNode: 16
+        maxInflightPerConnection: 4096
 
 routing:
   defaultCluster: "redis-a"
   routeEpoch: 1
   clusterSlotsRefreshIntervalSeconds: 30
+  rules:
+    - name: "gray-user-cache"
+      cluster: "redis-b"
+      keyPrefix: "user:"
+      trafficPercent: 10
 
 limits:
   maxPipelineDepth: 1024
@@ -161,6 +174,8 @@ limits:
 
 - 启动强校验，非法配置 fail fast。
 - 数据面运行时使用本地不可变快照。
+- `routeEpoch` 表示当前路由快照版本；数据面按快照进行原子路由选择，不在单请求中混用多个版本。
+- `routing.rules` 按顺序匹配，支持 `keyPrefix` / `hashTag` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
 - 控制面生成同结构配置，后续再支持动态发布。
 - 所有切换和治理规则必须可审计、可回滚。
 
@@ -375,12 +390,26 @@ Slot cache 刷新策略：
 15. 已完成 Go / Java `7100-7105` cluster-local smoke、master 故障、Redis Cluster failover 和 degraded refresh E2E。
 16. 已补充单元测试覆盖 `ASK` 不污染长期 slot cache、`MOVED` refresh 限频触发、backend reconnect 指标不为负和连接槽位替换。
 
+第二阶段后半：路由发布基础
+
+状态：本地快照能力已完成，动态发布和回滚待实现。
+
+已完成：
+
+1. Go / Java 数据面和 Java 控制面均支持统一 `routing.rules` 配置模型。
+2. `routing.rules` 支持按 `keyPrefix` / `hashTag` 匹配，并通过 key 的稳定 hash 做百分比灰度切流。
+3. Go / Java 数据面均支持多 backend cluster 的路由选择；命中灰度规则时路由到规则指定 cluster，否则回到 `defaultCluster`。
+4. cluster 模式下，Go / Java 数据面会按参与路由的 cluster 维护 slot cache 和 readiness 判断。
+5. 控制面校验 route rule 引用的 cluster、流量百分比和 key 匹配条件，避免生成不可执行配置。
+6. 单元测试已覆盖 Go / Java 灰度路由选择和控制面 route rule 合法性校验。
+
 待完成：
 
-1. 支持 routeEpoch 原子切换。
-2. 支持灰度路由和回滚。
-3. 补充 ASK 临时路由的完整执行语义，例如向临时 owner 发送 `ASKING` 后转发一次请求。
-4. 将 cluster failover E2E 固化为可重复脚本，减少手工验证步骤。
+1. 动态加载控制面发布的路由快照，并以 `routeEpoch` 做单调版本校验和原子切换。
+2. 支持显式回滚到上一版 routeEpoch。
+3. 支持灰度发布状态查询，例如当前 epoch、规则命中量、按 cluster 的 route decision 指标。
+4. 补充 ASK 临时路由的完整执行语义，例如向临时 owner 发送 `ASKING` 后转发一次请求。
+5. 将 cluster failover E2E 固化为可重复脚本，减少手工验证步骤。
 
 第三阶段：治理能力
 

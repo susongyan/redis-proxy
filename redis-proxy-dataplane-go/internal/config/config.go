@@ -41,9 +41,18 @@ type PoolConfig struct {
 }
 
 type RoutingConfig struct {
-	DefaultCluster                     string `yaml:"defaultCluster"`
-	RouteEpoch                         int64  `yaml:"routeEpoch"`
-	ClusterSlotsRefreshIntervalSeconds int    `yaml:"clusterSlotsRefreshIntervalSeconds"`
+	DefaultCluster                     string            `yaml:"defaultCluster"`
+	RouteEpoch                         int64             `yaml:"routeEpoch"`
+	ClusterSlotsRefreshIntervalSeconds int               `yaml:"clusterSlotsRefreshIntervalSeconds"`
+	Rules                              []RouteRuleConfig `yaml:"rules"`
+}
+
+type RouteRuleConfig struct {
+	Name           string `yaml:"name"`
+	Cluster        string `yaml:"cluster"`
+	KeyPrefix      string `yaml:"keyPrefix"`
+	HashTag        string `yaml:"hashTag"`
+	TrafficPercent int    `yaml:"trafficPercent"`
 }
 
 type LimitsConfig struct {
@@ -117,6 +126,20 @@ func (c *Config) Validate() error {
 	}
 	if !seen[c.Routing.DefaultCluster] {
 		return fmt.Errorf("default cluster %q not found", c.Routing.DefaultCluster)
+	}
+	for _, rule := range c.Routing.Rules {
+		if rule.Name == "" {
+			return errors.New("routing.rules.name is required")
+		}
+		if !seen[rule.Cluster] {
+			return fmt.Errorf("routing rule %q references unknown cluster %q", rule.Name, rule.Cluster)
+		}
+		if rule.TrafficPercent < 0 || rule.TrafficPercent > 100 {
+			return fmt.Errorf("routing rule %q trafficPercent must be between 0 and 100", rule.Name)
+		}
+		if rule.KeyPrefix == "" && rule.HashTag == "" {
+			return fmt.Errorf("routing rule %q must set keyPrefix or hashTag", rule.Name)
+		}
 	}
 	return nil
 }

@@ -28,4 +28,37 @@ class ConfigServiceTest {
         ProxyConfig config = service.get();
         assertThat(service.update(config)).isSameAs(config);
     }
+
+    @Test
+    void rejectsRouteRuleUnknownCluster() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        ProxyConfig.RouteRule rule = new ProxyConfig.RouteRule();
+        rule.setName("bad");
+        rule.setCluster("missing");
+        rule.setKeyPrefix("user:");
+        rule.setTrafficPercent(10);
+        config.getRouting().setRules(List.of(rule));
+
+        assertThatThrownBy(() -> service.update(config))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void acceptsValidRouteRule() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        ProxyConfig.Cluster gray = new ProxyConfig.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:6380"));
+        config.getBackends().setClusters(List.of(config.getBackends().getClusters().getFirst(), gray));
+        ProxyConfig.RouteRule rule = new ProxyConfig.RouteRule();
+        rule.setName("gray-user");
+        rule.setCluster("redis-b");
+        rule.setKeyPrefix("user:");
+        rule.setTrafficPercent(25);
+        config.getRouting().setRules(List.of(rule));
+
+        assertThat(service.update(config)).isSameAs(config);
+    }
 }

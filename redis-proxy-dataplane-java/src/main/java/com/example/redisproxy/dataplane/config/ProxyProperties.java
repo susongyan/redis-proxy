@@ -1,7 +1,9 @@
 package com.example.redisproxy.dataplane.config;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "proxy")
@@ -23,9 +25,31 @@ public class ProxyProperties {
         if (routing.clusterSlotsRefreshIntervalSeconds < 0) {
             throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
         }
-        boolean found = backends.clusters.stream().anyMatch(c -> routing.defaultCluster.equals(c.name));
-        if (!found) {
+        Set<String> clusterNames = new HashSet<>();
+        for (Cluster cluster : backends.clusters) {
+            if (cluster.name == null || cluster.name.isBlank()) {
+                throw new IllegalArgumentException("cluster name is required");
+            }
+            if (!clusterNames.add(cluster.name)) {
+                throw new IllegalArgumentException("duplicate cluster: " + cluster.name);
+            }
+        }
+        if (!clusterNames.contains(routing.defaultCluster)) {
             throw new IllegalArgumentException("default cluster not found: " + routing.defaultCluster);
+        }
+        for (RouteRule rule : routing.rules) {
+            if (rule.name == null || rule.name.isBlank()) {
+                throw new IllegalArgumentException("routing.rules.name is required");
+            }
+            if (!clusterNames.contains(rule.cluster)) {
+                throw new IllegalArgumentException("routing rule " + rule.name + " references unknown cluster: " + rule.cluster);
+            }
+            if (rule.trafficPercent < 0 || rule.trafficPercent > 100) {
+                throw new IllegalArgumentException("routing rule " + rule.name + " trafficPercent must be between 0 and 100");
+            }
+            if ((rule.keyPrefix == null || rule.keyPrefix.isBlank()) && (rule.hashTag == null || rule.hashTag.isBlank())) {
+                throw new IllegalArgumentException("routing rule " + rule.name + " must set keyPrefix or hashTag");
+            }
         }
     }
 
@@ -91,12 +115,33 @@ public class ProxyProperties {
         private String defaultCluster;
         private long routeEpoch = 1;
         private int clusterSlotsRefreshIntervalSeconds = 0;
+        private List<RouteRule> rules = new ArrayList<>();
         public String getDefaultCluster() { return defaultCluster; }
         public void setDefaultCluster(String defaultCluster) { this.defaultCluster = defaultCluster; }
         public long getRouteEpoch() { return routeEpoch; }
         public void setRouteEpoch(long routeEpoch) { this.routeEpoch = routeEpoch; }
         public int getClusterSlotsRefreshIntervalSeconds() { return clusterSlotsRefreshIntervalSeconds; }
         public void setClusterSlotsRefreshIntervalSeconds(int clusterSlotsRefreshIntervalSeconds) { this.clusterSlotsRefreshIntervalSeconds = clusterSlotsRefreshIntervalSeconds; }
+        public List<RouteRule> getRules() { return rules; }
+        public void setRules(List<RouteRule> rules) { this.rules = rules; }
+    }
+
+    public static class RouteRule {
+        private String name;
+        private String cluster;
+        private String keyPrefix;
+        private String hashTag;
+        private int trafficPercent;
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getCluster() { return cluster; }
+        public void setCluster(String cluster) { this.cluster = cluster; }
+        public String getKeyPrefix() { return keyPrefix; }
+        public void setKeyPrefix(String keyPrefix) { this.keyPrefix = keyPrefix; }
+        public String getHashTag() { return hashTag; }
+        public void setHashTag(String hashTag) { this.hashTag = hashTag; }
+        public int getTrafficPercent() { return trafficPercent; }
+        public void setTrafficPercent(int trafficPercent) { this.trafficPercent = trafficPercent; }
     }
 
     public static class Limits {

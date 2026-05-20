@@ -37,6 +37,34 @@ class RouteResolverTest {
         assertThat(resolver.slotCoverage()).isZero();
     }
 
+    @Test
+    void movedUpdatesSingleSlotCache() {
+        RouteResolver resolver = resolver("127.0.0.1:7100", "127.0.0.1:7101");
+        resolver.updateMoved(Unpooled.copiedBuffer("-MOVED 42 127.0.0.1:7101\r\n", StandardCharsets.US_ASCII), null);
+        assertThat(resolver.slotCoverage()).isEqualTo(1);
+        assertThat(resolver.clusterSlotOwners("redis-a")).containsExactly("127.0.0.1:7101");
+    }
+
+    @Test
+    void routeRuleSelectsGrayClusterByPrefix() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        ProxyProperties.Cluster gray = new ProxyProperties.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:6380"));
+        properties.getBackends().setClusters(List.of(properties.getBackends().getClusters().getFirst(), gray));
+        ProxyProperties.RouteRule rule = new ProxyProperties.RouteRule();
+        rule.setName("gray-user");
+        rule.setCluster("redis-b");
+        rule.setKeyPrefix("user:");
+        rule.setTrafficPercent(100);
+        properties.getRouting().setRules(List.of(rule));
+
+        RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+
+        assertThat(resolver.route(request("GET", "user:1"))).isEqualTo("127.0.0.1:6380");
+        assertThat(resolver.route(request("GET", "order:1"))).isEqualTo("127.0.0.1:6379");
+    }
+
     private static RouteResolver resolver(String... nodes) {
         return new RouteResolver(properties(nodes), new SimpleMeterRegistry());
     }
@@ -60,5 +88,13 @@ class RouteResolverTest {
             }
         }
         throw new IllegalStateException("test key not found");
+    }
+
+    private static RespRequest request(String... args) {
+        return new RespRequest(
+                Unpooled.EMPTY_BUFFER,
+                java.util.Arrays.stream(args)
+                        .map(arg -> arg.getBytes(StandardCharsets.US_ASCII))
+                        .toList());
     }
 }
