@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/analysis"
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/governance"
@@ -34,6 +35,7 @@ type Server struct {
 	onMoved   func()
 	nsLimiter *namespaceLimiter
 	keyGov    *keyGovernanceLimiter
+	hotKeys   *analysis.HotKeyTracker
 }
 
 type completion struct {
@@ -44,8 +46,8 @@ type completion struct {
 	start    time.Time
 }
 
-func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func()) *Server {
-	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg)}
+func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func(), hotKeys *analysis.HotKeyTracker) *Server {
+	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg), hotKeys: hotKeys}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -197,6 +199,7 @@ func (s *Server) handle(conn net.Conn) {
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: keyDecision.Response, start: start})
 			continue
 		}
+		s.hotKeys.Observe(namespace, req)
 		requestNamespace := namespace
 
 		decision, err := s.router.RouteDecision(req)

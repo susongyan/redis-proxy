@@ -211,6 +211,15 @@ assert_contains("reader get", exchange(cmd("AUTH", "reader", "token-r") + cmd("G
 assert_contains("reader set denied", exchange(cmd("AUTH", "reader", "token-r") + cmd("SET", "reader:1", "v")), b"-ERR command denied by proxy governance")
 PY
 
+curl -fsS "http://127.0.0.1:8080/debug/hot-keys?limit=5" >"${LOG_DIR}/hot-keys.json"
+python3 - <<'PY' "${LOG_DIR}/hot-keys.json"
+import json
+import sys
+items = json.load(open(sys.argv[1]))
+if not any(item.get("key") == "app-a:1" and item.get("command") == "GET" and item.get("count", 0) >= 1 for item in items):
+    raise SystemExit(f"hot key TopK missing app-a:1: {items!r}")
+PY
+
 curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @"${LOG_DIR}/publish-epoch2.json" http://127.0.0.1:8090/api/v1/config/publish >/dev/null
 for i in {1..50}; do
   epoch="$(curl -fsS http://127.0.0.1:8080/debug/route-snapshot | python3 -c 'import json,sys; print(json.load(sys.stdin)["epoch"])')"

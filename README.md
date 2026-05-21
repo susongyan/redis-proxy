@@ -244,6 +244,20 @@ governance:
 | key 限额配置 | `redis_proxy_key_limit_config{namespace,rule}` | `redis.proxy.key.limit.config{namespace,rule}` |
 | key 滑窗用量 | `redis_proxy_key_limit_window_usage{namespace,rule}` | `redis.proxy.key.limit.window.usage{namespace,rule}` |
 
+热 key 观测：
+
+- Go / Java 数据面都会在治理通过、进入路由前，对已支持 key 解析的命令做本地计数。
+- 进程内最多跟踪 10000 个 `namespace + command + key` 组合；超过上限的新 key 会被跳过并计入 dropped 指标。
+- `/debug/hot-keys?limit=20` 返回当前进程内 TopK 明细。
+- metrics 只暴露 Top 20，避免把全量 key 写入高基数 label。
+
+| 语义 | Go 指标 | Java 指标 |
+| --- | --- | --- |
+| 已观测 key 数 | `redis_proxy_hot_key_observed_total{namespace,command}` | `redis.proxy.hot.key.observed{namespace,command}` |
+| 容量满后丢弃数 | `redis_proxy_hot_key_dropped_total{namespace,command}` | `redis.proxy.hot.key.dropped{namespace,command}` |
+| 当前跟踪 key 数 | `redis_proxy_hot_key_tracked_keys` | `redis.proxy.hot.key.tracked.keys` |
+| TopK 计数 | `redis_proxy_hot_key_topk_count{namespace,command,key,rank}` | `redis.proxy.hot.key.topk.count{namespace,command,key,rank}` |
+
 ## 本地运行
 
 启动 Redis standalone：
@@ -511,11 +525,12 @@ Slot cache 刷新策略：
 7. 支持 namespace 维度连接数、QPS、inflight 限制。
 8. 支持 key 精确禁用、keyPrefix/hashTag 规则禁用，以及基于滑动窗口的 key rule QPS 限流。
 9. 补齐治理与限流可观测性：配置限额、当前连接/inflight、限流拒绝、key rule 决策和滑动窗口用量。
+10. 支持本地进程级热 key TopK 轻量采样，提供 debug 查询和低基数 TopK 指标。
 
 待完成：
 
 1. pipeline、请求大小、响应大小治理指标联动。
-2. 热 key 采样 TopK 和大 response 阈值告警。
+2. 大 response 阈值告警和热 key 统计窗口化/过期清理。
 3. 治理审计持久化、token 加密存储和密钥管理接入。
 
 第四阶段：控制面平台化

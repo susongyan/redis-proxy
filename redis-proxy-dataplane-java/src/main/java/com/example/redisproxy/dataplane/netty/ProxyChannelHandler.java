@@ -1,6 +1,7 @@
 package com.example.redisproxy.dataplane.netty;
 
 import com.example.redisproxy.dataplane.backend.BackendPool;
+import com.example.redisproxy.dataplane.analysis.HotKeyTracker;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
 import com.example.redisproxy.dataplane.governance.KeyGovernanceLimiter;
 import com.example.redisproxy.dataplane.governance.NamespaceLimiter;
@@ -31,18 +32,20 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
     private final ClusterSlotRefresher slotRefresher;
     private final NamespaceLimiter namespaceLimiter;
     private final KeyGovernanceLimiter keyGovernanceLimiter;
+    private final HotKeyTracker hotKeyTracker;
     private final MeterRegistry registry;
     private final AtomicInteger activeConnections;
     private final AtomicInteger pendingClientResponses;
     private final Counter moved;
     private final Counter ask;
 
-    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, ClusterSlotRefresher slotRefresher, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
+    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, ClusterSlotRefresher slotRefresher, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
         this.routeResolver = routeResolver;
         this.backendPool = backendPool;
         this.slotRefresher = slotRefresher;
         this.namespaceLimiter = namespaceLimiter;
         this.keyGovernanceLimiter = keyGovernanceLimiter;
+        this.hotKeyTracker = hotKeyTracker;
         this.registry = registry;
         this.activeConnections = activeConnections;
         this.pendingClientResponses = pendingClientResponses;
@@ -107,6 +110,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
                 sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(keyDecision.response(), StandardCharsets.US_ASCII), null, command, sample), pending -> flush(ctx, pending));
                 return;
             }
+            hotKeyTracker.observe(requestNamespace, request);
             RouteDecision decision = routeResolver.routeDecision(request);
             registry.counter("redis.proxy.route.decisions", "cluster", decision.cluster(), "rule", decision.rule()).increment();
             ByteBuf retryRaw = request.raw().retainedDuplicate();

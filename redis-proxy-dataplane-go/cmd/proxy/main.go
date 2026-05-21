@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/example/redis-proxy-dataplane-go/internal/admin"
+	"github.com/example/redis-proxy-dataplane-go/internal/analysis"
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
@@ -36,6 +37,7 @@ func main() {
 	}
 
 	reg := metrics.NewRegistry()
+	hotKeys := analysis.NewHotKeyTracker(reg)
 	manager, err := router.NewManager(cfg)
 	if err != nil {
 		log.Fatal("init route manager", zap.Error(err))
@@ -52,14 +54,14 @@ func main() {
 	triggerRefresh := startClusterSlotRefreshLoop(ctx, cfg, manager, pools, reg, log)
 	startControlPlanePolling(ctx, cfg, manager, pools, reg, log)
 
-	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, manager, pools, reg)
+	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, manager, pools, reg, hotKeys)
 	go func() {
 		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("admin server", zap.Error(err))
 		}
 	}()
 
-	server := proxy.NewServer(cfg, manager, pools, reg, log, triggerRefresh)
+	server := proxy.NewServer(cfg, manager, pools, reg, log, triggerRefresh, hotKeys)
 	go func() {
 		if err := server.ListenAndServe(ctx); err != nil {
 			log.Fatal("proxy server", zap.Error(err))

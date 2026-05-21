@@ -42,6 +42,10 @@ type Registry struct {
 	KeyGovernanceDecisions *prometheus.CounterVec
 	KeyLimitConfig         *prometheus.GaugeVec
 	KeyLimitWindowUsage    *prometheus.GaugeVec
+	HotKeyObserved         *prometheus.CounterVec
+	HotKeyDropped          *prometheus.CounterVec
+	HotKeyTracked          prometheus.Gauge
+	HotKeyTop              *prometheus.GaugeVec
 }
 
 func NewRegistry() *Registry {
@@ -82,6 +86,10 @@ func NewRegistry() *Registry {
 	r.KeyGovernanceDecisions = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_key_governance_decisions_total", Help: "Key governance rule decisions by namespace, rule and result"}, []string{"namespace", "rule", "command", "result", "reason"})
 	r.KeyLimitConfig = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_key_limit_config", Help: "Configured key rule QPS limits by namespace and rule"}, []string{"namespace", "rule"})
 	r.KeyLimitWindowUsage = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_key_limit_window_usage", Help: "Current key rule sliding window usage by namespace and rule"}, []string{"namespace", "rule"})
+	r.HotKeyObserved = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_hot_key_observed_total", Help: "Keys observed by hot key analyzer"}, []string{"namespace", "command"})
+	r.HotKeyDropped = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_hot_key_dropped_total", Help: "Keys skipped by hot key analyzer when tracking capacity is full"}, []string{"namespace", "command"})
+	r.HotKeyTracked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_hot_key_tracked_keys", Help: "Number of key entries currently tracked by hot key analyzer"})
+	r.HotKeyTop = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_hot_key_topk_count", Help: "Current hot key TopK counts by namespace, command, key and rank"}, []string{"namespace", "command", "key", "rank"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -121,6 +129,10 @@ func NewRegistry() *Registry {
 		r.KeyGovernanceDecisions,
 		r.KeyLimitConfig,
 		r.KeyLimitWindowUsage,
+		r.HotKeyObserved,
+		r.HotKeyDropped,
+		r.HotKeyTracked,
+		r.HotKeyTop,
 	)
 	return r
 }

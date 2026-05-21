@@ -108,7 +108,7 @@ public final class GovernancePolicy {
                 "namespaces", namespaces);
     }
 
-    static KeyResult keys(RespRequest request) {
+    public static KeyResult keys(RespRequest request) {
         List<byte[]> args = request.args();
         if (args.size() < 2) {
             return new KeyResult(List.of(), false);
@@ -166,5 +166,5 @@ public final class GovernancePolicy {
 
     public record AuthResult(boolean allowed, String namespace, String response, String result) {}
     public record Decision(String action, String namespace, String response, String reason, boolean warn, String warnReason) {}
-    record KeyResult(List<byte[]> keys, boolean supported) {}
+    public record KeyResult(List<byte[]> keys, boolean supported) {}
 }

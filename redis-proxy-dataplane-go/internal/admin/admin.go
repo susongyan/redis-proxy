@@ -3,7 +3,9 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/analysis"
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
@@ -11,7 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func NewServer(addr string, cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry) *http.Server {
+func NewServer(addr string, cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, hotKeys *analysis.HotKeyTracker) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -33,6 +35,16 @@ func NewServer(addr string, cfg *config.Config, rt *router.Manager, pools *backe
 	mux.HandleFunc("/debug/route-snapshot", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(rt.SnapshotInfo())
+	})
+	mux.HandleFunc("/debug/hot-keys", func(w http.ResponseWriter, r *http.Request) {
+		limit := 20
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(hotKeys.Snapshot(limit))
 	})
 	mux.Handle("/metrics", promhttp.HandlerFor(reg.Prom, promhttp.HandlerOpts{}))
 	return &http.Server{Addr: addr, Handler: mux}
