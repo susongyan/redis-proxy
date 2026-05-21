@@ -105,12 +105,19 @@ Rust 路线：
 
 ## 治理能力
 
-首版预留配置字段和指标，不把复杂治理放入 MVP 热路径。
+第三阶段第一批已落地治理 MVP：Go / Java 数据面都支持 `AUTH <namespace> <token>` 绑定连接身份，治理开启后未认证请求默认返回 `NOAUTH`，并在本地快照中执行命令治理、只读 namespace 和可选 key prefix 约束。
 
-后续治理能力分层：
+已实现边界：
 
 - 接入治理：namespace、应用身份、Redis 资源绑定关系。
 - 访问控制：命令黑白名单、只读 namespace、危险命令拦截。
+- 命令策略：默认拒绝 `FLUSHALL`、`FLUSHDB`、`CONFIG`、`SHUTDOWN`、`DEBUG`、`MODULE`；`KEYS`、`EVAL`、`SCRIPT` 第一版只打点不拒绝。
+- key 约束：namespace 可配置 `allowedKeyPrefixes`，为空表示不限制；非空时只允许已支持命令的 key 位置全部匹配前缀。
+- 动态生效：治理规则纳入 route snapshot，控制面发布更大 `routeEpoch` 后随长轮询原子切换。
+- 观测：数据面暴露 auth、governance reject 和 governance warn 指标；`/debug/route-snapshot` 只返回治理摘要，不暴露 token。
+
+后续治理能力分层：
+
 - 限流降级：连接数、QPS、pipeline depth、inflight、请求大小、响应大小。
 - 热 key 分析：在数据面做轻量采样和 TopK 近实时统计，重分析放异步链路。
 - 大 key / 大 response 分析：同步路径只做大小计数、阈值打点和采样，离线分析由旁路任务完成。
@@ -175,6 +182,20 @@ controlPlane:
   pollIntervalSeconds: 5
   watchTimeoutSeconds: 30
   requestTimeoutMillis: 1000
+
+governance:
+  enabled: false
+  requireAuth: true
+  commandPolicy:
+    deniedCommands: ["FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"]
+    warnOnlyCommands: ["KEYS", "EVAL", "SCRIPT"]
+  namespaces:
+    - name: "app-a"
+      token: "token-a"
+      readOnly: false
+      allowedKeyPrefixes: ["app-a:"]
+      deniedCommands: []
+      warnOnlyCommands: []
 ```
 
 配置原则：
@@ -186,6 +207,9 @@ controlPlane:
 - 控制面生成同结构配置；开启 `controlPlane.enabled` 后，数据面通过 `/api/v1/config/watch` 长轮询消费新快照。
 - `controlPlane.pollIntervalSeconds` 在长轮询模式下表示异常后的重试间隔；正常无变更时控制面返回 `204`，数据面立即续订下一次 watch。
 - `controlPlane.watchTimeoutSeconds` 表示单次 watch 的服务端等待窗口；`requestTimeoutMillis` 是客户端请求超时余量。
+- `governance.enabled=false` 时数据面保持透明代理；开启后，`AUTH <namespace> <token>` 由 proxy 本地处理并绑定连接身份，不转发给 Redis。
+- `governance.requireAuth=true` 时，除 `AUTH` / `QUIT` 外的未认证请求返回 `-NOAUTH Authentication required`。
+- namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
 - 所有切换和治理规则必须可审计、可回滚。
 
 ## 本地运行
@@ -227,6 +251,13 @@ REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down
 
 ```bash
 ./scripts/smoke.sh
+```
+
+执行治理 E2E：
+
+```bash
+./scripts/e2e-governance.sh go
+./scripts/e2e-governance.sh java
 ```
 
 执行 benchmark：
@@ -327,6 +358,8 @@ Backend 到 Redis 集群的异常处理遵循三个原则：
 - 已写入 socket 或执行状态不确定的请求不自动重放，避免写命令重复执行。
 - backend pool 在后台按退避策略重连，并按原连接槽位替换，保留同一 client/backend 的连接亲和。
 - 某个 Redis node 全部连接不可用时，只影响该 node 当前负责的 slot；proxy 不把这些 slot 随机路由到其他 master。
+- 动态配置发布时，backend pool 以 Redis node address 为粒度增量 `ensure`：新快照新增的 node 会提前建连接，已存在的 node 不重建连接池。
+- 新快照不再引用的旧 node 当前不会立即关闭，避免打断已基于旧 route snapshot 发出的在途请求；后续需要实现 `retired + drain timeout` 的连接回收。
 
 Slot cache 刷新策略：
 
@@ -429,13 +462,26 @@ Slot cache 刷新策略：
 1. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
 2. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
 3. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
+4. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
 
 第三阶段：治理能力
 
-1. namespace 配置和应用身份接入。
-2. 命令治理和危险命令拦截。
-3. 基于连接、QPS、pipeline、inflight、请求/响应大小的限流。
-4. 热 key 采样 TopK 和大 response 阈值告警。
+状态：第一批治理 MVP 已完成，限流和访问特征分析待进入后续批次。
+
+已完成：
+
+1. Go / Java 数据面支持 `AUTH <namespace> <token>`，按连接绑定 namespace。
+2. 治理开启后默认未认证拒绝，支持 namespace 删除后的 `NOAUTH namespace disabled` 语义。
+3. 支持全局和 namespace 级危险命令拦截、warn-only 命令打点、只读 namespace。
+4. 支持 namespace 可选 `allowedKeyPrefixes`，对未知 key 位置命令 fail closed。
+5. 控制面 `ProxyConfig`、publish、rollback、diff 和 status 支持 governance 配置。
+6. 治理规则随 route snapshot 长轮询动态生效，Go / Java 均有 `e2e-governance.sh` 覆盖。
+
+待完成：
+
+1. 基于连接、QPS、pipeline、inflight、请求/响应大小的限流。
+2. 热 key 采样 TopK 和大 response 阈值告警。
+3. 治理审计持久化、token 加密存储和密钥管理接入。
 
 第四阶段：控制面平台化
 

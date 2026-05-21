@@ -193,6 +193,53 @@ class ConfigServiceTest {
         assertThat(service.routeStatus().lastPublished().reason()).isEqualTo("publish");
     }
 
+    @Test
+    void validatesAndCopiesGovernanceConfig() {
+        ConfigService service = new ConfigService();
+        ProxyConfig next = service.get();
+        next.getRouting().setRouteEpoch(2);
+        next.getGovernance().setEnabled(true);
+        ProxyConfig.Namespace namespace = new ProxyConfig.Namespace();
+        namespace.setName("app-a");
+        namespace.setToken("token-a");
+        namespace.setAllowedKeyPrefixes(List.of("app-a:"));
+        namespace.setDeniedCommands(List.of("flushall"));
+        next.getGovernance().setNamespaces(List.of(namespace));
+
+        ConfigVersion version = service.publish(publishRequest(next, "alice", "governance"));
+
+        assertThat(version.config().getGovernance().isRequireAuth()).isTrue();
+        assertThat(version.config().getGovernance().getNamespaces()).hasSize(1);
+        assertThat(version.config().getGovernance().getNamespaces().getFirst().getDeniedCommands()).containsExactly("FLUSHALL");
+        assertThat(version.config().getGovernance().getNamespaces().getFirst().getToken()).isEqualTo("token-a");
+        assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("governance"));
+    }
+
+    @Test
+    void rejectsInvalidGovernanceConfig() {
+        ConfigService service = new ConfigService();
+        ProxyConfig next = service.get();
+        next.getRouting().setRouteEpoch(2);
+        next.getGovernance().setEnabled(true);
+        ProxyConfig.Namespace namespace = new ProxyConfig.Namespace();
+        namespace.setName("app-a");
+        namespace.setToken("");
+        next.getGovernance().setNamespaces(List.of(namespace));
+
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "bad governance")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("token");
+
+        namespace.setToken("token-a");
+        ProxyConfig.Namespace duplicate = new ProxyConfig.Namespace();
+        duplicate.setName("app-a");
+        duplicate.setToken("token-b");
+        next.getGovernance().setNamespaces(List.of(namespace, duplicate));
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "duplicate governance")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("duplicate");
+    }
+
     private static PublishRequest publishRequest(ProxyConfig config, String operator, String reason) {
         PublishRequest request = new PublishRequest();
         request.setConfig(config);

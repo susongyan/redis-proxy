@@ -142,6 +142,50 @@ func TestReconnectInactiveOnceBacksOffAfterFailure(t *testing.T) {
 	}
 }
 
+func TestEnsureDoesNotRebuildExistingBackendPool(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go acceptAndHold(ln)
+
+	cfg := &config.Config{
+		Mode: "standalone",
+		Backends: config.BackendConfig{Clusters: []config.ClusterConfig{{
+			Name:  "redis-a",
+			Nodes: []string{ln.Addr().String()},
+			Pool:  config.PoolConfig{ConnectionsPerNode: 1, MaxInflightPerConnection: 8},
+		}}},
+		Limits:  config.LimitsConfig{MaxResponseBytes: 1024},
+		Routing: config.RoutingConfig{DefaultCluster: "redis-a"},
+	}
+	pools, err := NewPools(cfg, metrics.NewRegistry(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pools.Close()
+
+	pools.mu.RLock()
+	before := pools.conns[ln.Addr().String()][0]
+	pools.mu.RUnlock()
+
+	if err := pools.Ensure(ln.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+
+	pools.mu.RLock()
+	after := pools.conns[ln.Addr().String()][0]
+	size := len(pools.conns[ln.Addr().String()])
+	pools.mu.RUnlock()
+	if before != after {
+		t.Fatal("Ensure rebuilt an existing backend connection")
+	}
+	if size != 1 {
+		t.Fatalf("pool size=%d want 1", size)
+	}
+}
+
 func TestDoAsyncAskingSkipsAskingResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -211,5 +255,18 @@ func TestDoAsyncAskingSkipsAskingResponse(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("backend did not receive expected frames")
+	}
+}
+
+func acceptAndHold(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer conn.Close()
+			select {}
+		}()
 	}
 }

@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Positive;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class ProxyConfig {
     @Valid private Server server = new Server();
@@ -14,6 +15,7 @@ public class ProxyConfig {
     @Valid private Backends backends = new Backends();
     @Valid private Routing routing = new Routing();
     @Valid private Limits limits = new Limits();
+    @Valid private Governance governance = new Governance();
 
     public Server getServer() { return server; }
     public void setServer(Server server) { this.server = server; }
@@ -27,6 +29,8 @@ public class ProxyConfig {
     public void setRouting(Routing routing) { this.routing = routing; }
     public Limits getLimits() { return limits; }
     public void setLimits(Limits limits) { this.limits = limits; }
+    public Governance getGovernance() { return governance; }
+    public void setGovernance(Governance governance) { this.governance = governance; }
 
     public static class Server {
         @NotBlank private String listen = "0.0.0.0:6379";
@@ -116,5 +120,84 @@ public class ProxyConfig {
         public void setMaxRequestBytes(int maxRequestBytes) { this.maxRequestBytes = maxRequestBytes; }
         public int getMaxResponseBytes() { return maxResponseBytes; }
         public void setMaxResponseBytes(int maxResponseBytes) { this.maxResponseBytes = maxResponseBytes; }
+    }
+
+    public static class Governance {
+        private boolean enabled;
+        private boolean requireAuth;
+        @Valid private CommandPolicy commandPolicy = new CommandPolicy();
+        @Valid private List<Namespace> namespaces = new ArrayList<>();
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public boolean isRequireAuth() { return requireAuth; }
+        public void setRequireAuth(boolean requireAuth) { this.requireAuth = requireAuth; }
+        public CommandPolicy getCommandPolicy() { return commandPolicy; }
+        public void setCommandPolicy(CommandPolicy commandPolicy) { this.commandPolicy = commandPolicy; }
+        public List<Namespace> getNamespaces() { return namespaces; }
+        public void setNamespaces(List<Namespace> namespaces) { this.namespaces = namespaces; }
+
+        public void applyDefaults() {
+            if (enabled && !requireAuth) {
+                requireAuth = true;
+            }
+            if (commandPolicy.deniedCommands.isEmpty()) {
+                commandPolicy.deniedCommands = new ArrayList<>(List.of("FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"));
+            }
+            if (commandPolicy.warnOnlyCommands.isEmpty()) {
+                commandPolicy.warnOnlyCommands = new ArrayList<>(List.of("KEYS", "EVAL", "SCRIPT"));
+            }
+            commandPolicy.normalize();
+            for (Namespace namespace : namespaces) {
+                namespace.normalize();
+            }
+        }
+    }
+
+    public static class CommandPolicy {
+        private List<String> deniedCommands = new ArrayList<>();
+        private List<String> warnOnlyCommands = new ArrayList<>();
+        public List<String> getDeniedCommands() { return deniedCommands; }
+        public void setDeniedCommands(List<String> deniedCommands) { this.deniedCommands = deniedCommands; }
+        public List<String> getWarnOnlyCommands() { return warnOnlyCommands; }
+        public void setWarnOnlyCommands(List<String> warnOnlyCommands) { this.warnOnlyCommands = warnOnlyCommands; }
+
+        void normalize() {
+            deniedCommands = normalizeCommands(deniedCommands);
+            warnOnlyCommands = normalizeCommands(warnOnlyCommands);
+        }
+    }
+
+    public static class Namespace {
+        private String name;
+        private String token;
+        private boolean readOnly;
+        private List<String> allowedKeyPrefixes = new ArrayList<>();
+        private List<String> deniedCommands = new ArrayList<>();
+        private List<String> warnOnlyCommands = new ArrayList<>();
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getToken() { return token; }
+        public void setToken(String token) { this.token = token; }
+        public boolean isReadOnly() { return readOnly; }
+        public void setReadOnly(boolean readOnly) { this.readOnly = readOnly; }
+        public List<String> getAllowedKeyPrefixes() { return allowedKeyPrefixes; }
+        public void setAllowedKeyPrefixes(List<String> allowedKeyPrefixes) { this.allowedKeyPrefixes = allowedKeyPrefixes; }
+        public List<String> getDeniedCommands() { return deniedCommands; }
+        public void setDeniedCommands(List<String> deniedCommands) { this.deniedCommands = deniedCommands; }
+        public List<String> getWarnOnlyCommands() { return warnOnlyCommands; }
+        public void setWarnOnlyCommands(List<String> warnOnlyCommands) { this.warnOnlyCommands = warnOnlyCommands; }
+
+        void normalize() {
+            deniedCommands = normalizeCommands(deniedCommands);
+            warnOnlyCommands = normalizeCommands(warnOnlyCommands);
+        }
+    }
+
+    private static List<String> normalizeCommands(List<String> commands) {
+        List<String> normalized = new ArrayList<>();
+        for (String command : commands) {
+            normalized.add(command == null ? "" : command.trim().toUpperCase(Locale.ROOT));
+        }
+        return normalized;
     }
 }

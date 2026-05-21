@@ -56,6 +56,21 @@ func TestValidateAcceptsRouteRule(t *testing.T) {
 	}
 }
 
+func TestValidateGovernance(t *testing.T) {
+	cfg := validConfig()
+	cfg.Governance.Enabled = true
+	cfg.Governance.Namespaces = []NamespaceConfig{{Name: "app-a", Token: "token-a"}}
+	cfg.Governance.CommandPolicy.DeniedCommands = []string{"FLUSHALL"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Governance.Namespaces = append(cfg.Governance.Namespaces, NamespaceConfig{Name: "app-a", Token: "other"})
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected duplicate namespace validation error")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: ServerConfig{Listen: "127.0.0.1:6379"},

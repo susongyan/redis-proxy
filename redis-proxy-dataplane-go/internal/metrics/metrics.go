@@ -31,6 +31,9 @@ type Registry struct {
 	BackendReconnects     *prometheus.CounterVec
 	BackendReconnecting   *prometheus.GaugeVec
 	BackendUnavailable    *prometheus.CounterVec
+	Auth                  *prometheus.CounterVec
+	GovernanceRejects     *prometheus.CounterVec
+	GovernanceWarns       *prometheus.CounterVec
 }
 
 func NewRegistry() *Registry {
@@ -60,6 +63,9 @@ func NewRegistry() *Registry {
 	r.BackendReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_backend_reconnect_total", Help: "Backend reconnect attempts by Redis node and result"}, []string{"node", "result"})
 	r.BackendReconnecting = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_backend_reconnecting", Help: "Backend reconnect attempts currently scheduled or running by Redis node"}, []string{"node"})
 	r.BackendUnavailable = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_backend_unavailable_total", Help: "Backend unavailable errors by Redis node and reason"}, []string{"node", "reason"})
+	r.Auth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_auth_total", Help: "Proxy namespace auth attempts by result"}, []string{"namespace", "result"})
+	r.GovernanceRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_governance_reject_total", Help: "Requests rejected by proxy governance"}, []string{"namespace", "command", "reason"})
+	r.GovernanceWarns = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_governance_warn_total", Help: "Requests matched warn-only proxy governance"}, []string{"namespace", "command", "reason"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -88,6 +94,9 @@ func NewRegistry() *Registry {
 		r.BackendReconnects,
 		r.BackendReconnecting,
 		r.BackendUnavailable,
+		r.Auth,
+		r.GovernanceRejects,
+		r.GovernanceWarns,
 	)
 	return r
 }

@@ -36,6 +36,28 @@ class BackendPoolTest {
     }
 
     @Test
+    void ensureAllDoesNotRebuildExistingBackendPool() throws Exception {
+        try (ServerSocket first = new ServerSocket(0); ServerSocket second = new ServerSocket(0)) {
+            acceptAndHold(first);
+            acceptAndHold(second);
+            String firstAddress = "127.0.0.1:" + first.getLocalPort();
+            String secondAddress = "127.0.0.1:" + second.getLocalPort();
+            BackendPool pool = new BackendPool(new ProxyProperties(), new SimpleMeterRegistry());
+            try {
+                pool.ensureAll(List.of(firstAddress));
+                assertThat(pool.desiredCount(firstAddress)).isEqualTo(1);
+
+                pool.ensureAll(List.of(firstAddress, secondAddress));
+
+                assertThat(pool.desiredCount(firstAddress)).isEqualTo(1);
+                assertThat(pool.desiredCount(secondAddress)).isEqualTo(1);
+            } finally {
+                pool.close();
+            }
+        }
+    }
+
+    @Test
     void askingRequestSkipsAskingResponse() throws Exception {
         try (ServerSocket server = new ServerSocket(0)) {
             CompletableFuture<List<String>> frames = new CompletableFuture<>();
@@ -87,6 +109,28 @@ class BackendPoolTest {
         properties.getBackends().setClusters(List.of(cluster));
         properties.getRouting().setDefaultCluster("redis-a");
         return properties;
+    }
+
+    private static void acceptAndHold(ServerSocket server) {
+        Thread backend = new Thread(() -> {
+            while (!server.isClosed()) {
+                try {
+                    Socket socket = server.accept();
+                    Thread holder = new Thread(() -> {
+                        try (socket) {
+                            Thread.sleep(TimeUnit.SECONDS.toMillis(5));
+                        } catch (Exception ignored) {
+                        }
+                    });
+                    holder.setDaemon(true);
+                    holder.start();
+                } catch (Exception ignored) {
+                    return;
+                }
+            }
+        });
+        backend.setDaemon(true);
+        backend.start();
     }
 
     private static String readRespArrayRaw(BufferedInputStream in) throws Exception {

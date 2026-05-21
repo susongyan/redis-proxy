@@ -35,7 +35,9 @@ public class ConfigService {
     });
 
     public ConfigService() {
-        recordVersion(defaultConfig(), "system", "initial-config", "INIT", "APPROVED", null, false);
+        ProxyConfig initial = defaultConfig();
+        initial.getGovernance().applyDefaults();
+        recordVersion(initial, "system", "initial-config", "INIT", "APPROVED", null, false);
     }
 
     public ProxyConfig get() {
@@ -43,6 +45,7 @@ public class ConfigService {
     }
 
     public ProxyConfig update(ProxyConfig config) {
+        config.getGovernance().applyDefaults();
         validateSemantics(config);
         ConfigVersion version = recordVersion(config, "system", "compat-put", "PUT", "APPROVED", null, true);
         return copyConfig(version.config());
@@ -50,6 +53,7 @@ public class ConfigService {
 
     public ConfigVersion publish(PublishRequest request) {
         ProxyConfig config = copyConfig(request.getConfig());
+        config.getGovernance().applyDefaults();
         validateSemantics(config);
         long currentEpoch = current.get().getRouting().getRouteEpoch();
         if (config.getRouting().getRouteEpoch() <= currentEpoch) {
@@ -63,6 +67,7 @@ public class ConfigService {
                 .orElseThrow(() -> new IllegalArgumentException("rollback target version not found"));
         ProxyConfig rollback = copyConfig(target.config());
         rollback.getRouting().setRouteEpoch(current.get().getRouting().getRouteEpoch() + 1);
+        rollback.getGovernance().applyDefaults();
         validateSemantics(rollback);
         return recordVersion(rollback, request.getOperator(), request.getReason(), "ROLLBACK", approvalStatus(request.getApprovalStatus()), target.versionId(), true);
     }
@@ -93,6 +98,7 @@ public class ConfigService {
         addChange(changes, "limits.maxPipelineDepth", a.getLimits().getMaxPipelineDepth(), b.getLimits().getMaxPipelineDepth());
         addChange(changes, "limits.maxRequestBytes", a.getLimits().getMaxRequestBytes(), b.getLimits().getMaxRequestBytes());
         addChange(changes, "limits.maxResponseBytes", a.getLimits().getMaxResponseBytes(), b.getLimits().getMaxResponseBytes());
+        addChange(changes, "governance", summarizeGovernance(a), summarizeGovernance(b));
         return new ConfigDiff(fromVersionId, toVersionId, changes);
     }
 
@@ -165,6 +171,7 @@ public class ConfigService {
     }
 
     private static void validateSemantics(ProxyConfig config) {
+        config.getGovernance().applyDefaults();
         List<String> clusterNames = config.getBackends().getClusters().stream()
                 .map(ProxyConfig.Cluster::getName)
                 .toList();
@@ -191,6 +198,41 @@ public class ConfigService {
             boolean hasHashTag = rule.getHashTag() != null && !rule.getHashTag().isBlank();
             if (!hasKeyPrefix && !hasHashTag) {
                 throw new IllegalArgumentException("routing rule " + rule.getName() + " must set keyPrefix or hashTag");
+            }
+        }
+        validateGovernance(config.getGovernance());
+    }
+
+    private static void validateGovernance(ProxyConfig.Governance governance) {
+        validateCommands("governance.commandPolicy.deniedCommands", governance.getCommandPolicy().getDeniedCommands());
+        validateCommands("governance.commandPolicy.warnOnlyCommands", governance.getCommandPolicy().getWarnOnlyCommands());
+        List<String> seen = new ArrayList<>();
+        for (ProxyConfig.Namespace namespace : governance.getNamespaces()) {
+            if (namespace.getName() == null || namespace.getName().isBlank()) {
+                throw new IllegalArgumentException("governance.namespaces.name is required");
+            }
+            if (namespace.getToken() == null || namespace.getToken().isBlank()) {
+                throw new IllegalArgumentException("governance namespace " + namespace.getName() + " token is required");
+            }
+            if (seen.contains(namespace.getName())) {
+                throw new IllegalArgumentException("duplicate governance namespace: " + namespace.getName());
+            }
+            seen.add(namespace.getName());
+            validateCommands("governance.namespaces.deniedCommands", namespace.getDeniedCommands());
+            validateCommands("governance.namespaces.warnOnlyCommands", namespace.getWarnOnlyCommands());
+        }
+    }
+
+    private static void validateCommands(String field, List<String> commands) {
+        for (String command : commands) {
+            if (command == null || command.isBlank()) {
+                throw new IllegalArgumentException(field + " has invalid command");
+            }
+            for (int i = 0; i < command.length(); i++) {
+                char c = command.charAt(i);
+                if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) {
+                    throw new IllegalArgumentException(field + " has invalid command: " + command);
+                }
             }
         }
     }
@@ -225,6 +267,16 @@ public class ConfigService {
                 .map(cluster -> cluster.getName() + "=" + cluster.getNodes())
                 .toList()
                 .toString();
+    }
+
+    private static String summarizeGovernance(ProxyConfig config) {
+        return config.getGovernance().isEnabled()
+                + ":" + config.getGovernance().isRequireAuth()
+                + ":" + config.getGovernance().getCommandPolicy().getDeniedCommands()
+                + ":" + config.getGovernance().getCommandPolicy().getWarnOnlyCommands()
+                + ":" + config.getGovernance().getNamespaces().stream()
+                .map(namespace -> namespace.getName() + ":" + namespace.isReadOnly() + ":" + namespace.getAllowedKeyPrefixes() + ":" + namespace.getDeniedCommands() + ":" + namespace.getWarnOnlyCommands())
+                .toList();
     }
 
     private static String approvalStatus(String value) {
@@ -263,6 +315,7 @@ public class ConfigService {
         copy.getLimits().setMaxPipelineDepth(source.getLimits().getMaxPipelineDepth());
         copy.getLimits().setMaxRequestBytes(source.getLimits().getMaxRequestBytes());
         copy.getLimits().setMaxResponseBytes(source.getLimits().getMaxResponseBytes());
+        copy.setGovernance(copyGovernance(source.getGovernance()));
         return copy;
     }
 
@@ -285,6 +338,29 @@ public class ConfigService {
             copy.setTrafficPercent(rule.getTrafficPercent());
             return copy;
         }).toList();
+    }
+
+    private static ProxyConfig.Governance copyGovernance(ProxyConfig.Governance source) {
+        ProxyConfig.Governance copy = new ProxyConfig.Governance();
+        copy.setEnabled(source.isEnabled());
+        copy.setRequireAuth(source.isRequireAuth());
+        ProxyConfig.CommandPolicy commandPolicy = new ProxyConfig.CommandPolicy();
+        commandPolicy.setDeniedCommands(List.copyOf(source.getCommandPolicy().getDeniedCommands()));
+        commandPolicy.setWarnOnlyCommands(List.copyOf(source.getCommandPolicy().getWarnOnlyCommands()));
+        copy.setCommandPolicy(commandPolicy);
+        copy.setNamespaces(source.getNamespaces().stream().map(ConfigService::copyNamespace).toList());
+        return copy;
+    }
+
+    private static ProxyConfig.Namespace copyNamespace(ProxyConfig.Namespace source) {
+        ProxyConfig.Namespace copy = new ProxyConfig.Namespace();
+        copy.setName(source.getName());
+        copy.setToken(source.getToken());
+        copy.setReadOnly(source.isReadOnly());
+        copy.setAllowedKeyPrefixes(List.copyOf(source.getAllowedKeyPrefixes()));
+        copy.setDeniedCommands(List.copyOf(source.getDeniedCommands()));
+        copy.setWarnOnlyCommands(List.copyOf(source.getWarnOnlyCommands()));
+        return copy;
     }
 
     private static ProxyConfig defaultConfig() {

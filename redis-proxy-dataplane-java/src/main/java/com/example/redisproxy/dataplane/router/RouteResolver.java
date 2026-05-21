@@ -2,6 +2,7 @@ package com.example.redisproxy.dataplane.router;
 
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
+import com.example.redisproxy.dataplane.governance.GovernancePolicy;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import com.example.redisproxy.dataplane.protocol.RespValue;
 import com.example.redisproxy.dataplane.protocol.RespValueParser;
@@ -226,7 +227,12 @@ public class RouteResolver {
                 current.properties().getMode(),
                 current.properties().getRouting().getDefaultCluster(),
                 routeClusters(),
-                List.copyOf(current.properties().getRouting().getRules()));
+                List.copyOf(current.properties().getRouting().getRules()),
+                GovernancePolicy.summary(current.properties().getGovernance()));
+    }
+
+    public ProxyProperties.Governance governance() {
+        return snapshot.get().properties().getGovernance();
     }
 
     public ApplyResult applyConfig(ProxyProperties next, BackendPool backendPool) {
@@ -394,7 +400,7 @@ public class RouteResolver {
     }
 
     public record RouteDecision(String address, String cluster, String rule, long epoch) {}
-    public record SnapshotInfo(long epoch, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules) {}
+    public record SnapshotInfo(long epoch, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules, Map<String, Object> governance) {}
     public record ApplyResult(String result, boolean applied, String error) {}
     private record Snapshot(ProxyProperties properties, Map<String, ProxyProperties.Cluster> clusters) {}
     private record SelectedCluster(String cluster, String rule) {}

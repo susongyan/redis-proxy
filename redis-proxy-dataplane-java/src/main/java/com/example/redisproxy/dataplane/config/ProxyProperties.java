@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Locale;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "proxy")
@@ -15,6 +16,7 @@ public class ProxyProperties {
     private Routing routing = new Routing();
     private Limits limits = new Limits();
     private ControlPlane controlPlane = new ControlPlane();
+    private Governance governance = new Governance();
 
     public void validate() {
         if (!"standalone".equals(mode) && !"cluster".equals(mode)) {
@@ -41,6 +43,8 @@ public class ProxyProperties {
         if (controlPlane.requestTimeoutMillis < 0) {
             throw new IllegalArgumentException("controlPlane.requestTimeoutMillis must be >= 0");
         }
+        governance.applyDefaults();
+        governance.validate();
         Set<String> clusterNames = new HashSet<>();
         for (Cluster cluster : backends.clusters) {
             if (cluster.name == null || cluster.name.isBlank()) {
@@ -83,6 +87,8 @@ public class ProxyProperties {
     public void setLimits(Limits limits) { this.limits = limits; }
     public ControlPlane getControlPlane() { return controlPlane; }
     public void setControlPlane(ControlPlane controlPlane) { this.controlPlane = controlPlane; }
+    public Governance getGovernance() { return governance; }
+    public void setGovernance(Governance governance) { this.governance = governance; }
 
     public static class Server {
         private String listen = "0.0.0.0:6379";
@@ -190,5 +196,131 @@ public class ProxyProperties {
         public void setMaxRequestBytes(int maxRequestBytes) { this.maxRequestBytes = maxRequestBytes; }
         public int getMaxResponseBytes() { return maxResponseBytes; }
         public void setMaxResponseBytes(int maxResponseBytes) { this.maxResponseBytes = maxResponseBytes; }
+    }
+
+    public static class Governance {
+        private boolean enabled;
+        private boolean requireAuth;
+        private CommandPolicy commandPolicy = new CommandPolicy();
+        private List<Namespace> namespaces = new ArrayList<>();
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public boolean isRequireAuth() { return requireAuth; }
+        public void setRequireAuth(boolean requireAuth) { this.requireAuth = requireAuth; }
+        public CommandPolicy getCommandPolicy() { return commandPolicy; }
+        public void setCommandPolicy(CommandPolicy commandPolicy) { this.commandPolicy = commandPolicy; }
+        public List<Namespace> getNamespaces() { return namespaces; }
+        public void setNamespaces(List<Namespace> namespaces) { this.namespaces = namespaces; }
+
+        void applyDefaults() {
+            if (enabled && !requireAuth) {
+                requireAuth = true;
+            }
+            if (commandPolicy.deniedCommands.isEmpty()) {
+                commandPolicy.deniedCommands = new ArrayList<>(List.of("FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"));
+            }
+            if (commandPolicy.warnOnlyCommands.isEmpty()) {
+                commandPolicy.warnOnlyCommands = new ArrayList<>(List.of("KEYS", "EVAL", "SCRIPT"));
+            }
+            commandPolicy.normalize();
+            for (Namespace namespace : namespaces) {
+                namespace.normalize();
+            }
+        }
+
+        void validate() {
+            Set<String> seen = new HashSet<>();
+            commandPolicy.validate("governance.commandPolicy");
+            for (Namespace namespace : namespaces) {
+                if (namespace.name == null || namespace.name.isBlank()) {
+                    throw new IllegalArgumentException("governance.namespaces.name is required");
+                }
+                if (namespace.token == null || namespace.token.isBlank()) {
+                    throw new IllegalArgumentException("governance namespace " + namespace.name + " token is required");
+                }
+                if (!seen.add(namespace.name)) {
+                    throw new IllegalArgumentException("duplicate governance namespace: " + namespace.name);
+                }
+                namespace.validate();
+            }
+        }
+    }
+
+    public static class CommandPolicy {
+        private List<String> deniedCommands = new ArrayList<>();
+        private List<String> warnOnlyCommands = new ArrayList<>();
+        public List<String> getDeniedCommands() { return deniedCommands; }
+        public void setDeniedCommands(List<String> deniedCommands) { this.deniedCommands = deniedCommands; }
+        public List<String> getWarnOnlyCommands() { return warnOnlyCommands; }
+        public void setWarnOnlyCommands(List<String> warnOnlyCommands) { this.warnOnlyCommands = warnOnlyCommands; }
+
+        void normalize() {
+            deniedCommands = normalizeCommands(deniedCommands);
+            warnOnlyCommands = normalizeCommands(warnOnlyCommands);
+        }
+
+        void validate(String field) {
+            for (String command : deniedCommands) {
+                validateCommand(field, command);
+            }
+            for (String command : warnOnlyCommands) {
+                validateCommand(field, command);
+            }
+        }
+    }
+
+    public static class Namespace {
+        private String name;
+        private String token;
+        private boolean readOnly;
+        private List<String> allowedKeyPrefixes = new ArrayList<>();
+        private List<String> deniedCommands = new ArrayList<>();
+        private List<String> warnOnlyCommands = new ArrayList<>();
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getToken() { return token; }
+        public void setToken(String token) { this.token = token; }
+        public boolean isReadOnly() { return readOnly; }
+        public void setReadOnly(boolean readOnly) { this.readOnly = readOnly; }
+        public List<String> getAllowedKeyPrefixes() { return allowedKeyPrefixes; }
+        public void setAllowedKeyPrefixes(List<String> allowedKeyPrefixes) { this.allowedKeyPrefixes = allowedKeyPrefixes; }
+        public List<String> getDeniedCommands() { return deniedCommands; }
+        public void setDeniedCommands(List<String> deniedCommands) { this.deniedCommands = deniedCommands; }
+        public List<String> getWarnOnlyCommands() { return warnOnlyCommands; }
+        public void setWarnOnlyCommands(List<String> warnOnlyCommands) { this.warnOnlyCommands = warnOnlyCommands; }
+
+        void normalize() {
+            deniedCommands = normalizeCommands(deniedCommands);
+            warnOnlyCommands = normalizeCommands(warnOnlyCommands);
+        }
+
+        void validate() {
+            for (String command : deniedCommands) {
+                validateCommand("governance.namespaces.deniedCommands", command);
+            }
+            for (String command : warnOnlyCommands) {
+                validateCommand("governance.namespaces.warnOnlyCommands", command);
+            }
+        }
+    }
+
+    private static List<String> normalizeCommands(List<String> commands) {
+        List<String> normalized = new ArrayList<>();
+        for (String command : commands) {
+            normalized.add(command == null ? "" : command.trim().toUpperCase(Locale.ROOT));
+        }
+        return normalized;
+    }
+
+    private static void validateCommand(String field, String command) {
+        if (command == null || command.isBlank()) {
+            throw new IllegalArgumentException(field + " has invalid command");
+        }
+        for (int i = 0; i < command.length(); i++) {
+            char c = command.charAt(i);
+            if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) {
+                throw new IllegalArgumentException(field + " has invalid command: " + command);
+            }
+        }
     }
 }

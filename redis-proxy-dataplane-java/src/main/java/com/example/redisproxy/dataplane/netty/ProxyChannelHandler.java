@@ -1,6 +1,7 @@
 package com.example.redisproxy.dataplane.netty;
 
 import com.example.redisproxy.dataplane.backend.BackendPool;
+import com.example.redisproxy.dataplane.governance.GovernancePolicy;
 import com.example.redisproxy.dataplane.netty.ClientResponseSequencer.PendingResponse;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import com.example.redisproxy.dataplane.router.ClusterSlotRefresher;
@@ -20,6 +21,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest> {
     private static final AttributeKey<ClientResponseSequencer> SEQUENCER =
             AttributeKey.valueOf("redis.proxy.response.sequencer");
+    private static final AttributeKey<String> NAMESPACE =
+            AttributeKey.valueOf("redis.proxy.namespace");
 
     private final RouteResolver routeResolver;
     private final BackendPool backendPool;
@@ -50,6 +53,25 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         pendingClientResponses.incrementAndGet();
         registry.counter("redis.proxy.requests", "command", command).increment();
         try {
+            if (routeResolver.governance().isEnabled() && "AUTH".equals(command)) {
+                GovernancePolicy.AuthResult auth = GovernancePolicy.authenticate(routeResolver.governance(), request);
+                registry.counter("redis.proxy.auth", "namespace", auth.namespace(), "result", auth.result()).increment();
+                if (auth.allowed()) {
+                    ctx.channel().attr(NAMESPACE).set(auth.namespace());
+                }
+                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(auth.response(), StandardCharsets.US_ASCII), null, command, sample), pending -> flush(ctx, pending));
+                return;
+            }
+            String namespace = ctx.channel().attr(NAMESPACE).get();
+            GovernancePolicy.Decision governance = GovernancePolicy.evaluate(routeResolver.governance(), namespace == null ? "" : namespace, request);
+            if (governance.warn()) {
+                registry.counter("redis.proxy.governance.warn", "namespace", governance.namespace(), "command", command, "reason", governance.warnReason()).increment();
+            }
+            if (!GovernancePolicy.ALLOW.equals(governance.action())) {
+                registry.counter("redis.proxy.governance.reject", "namespace", governance.namespace(), "command", command, "reason", governance.reason()).increment();
+                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(governance.response(), StandardCharsets.US_ASCII), null, command, sample), pending -> flush(ctx, pending));
+                return;
+            }
             RouteDecision decision = routeResolver.routeDecision(request);
             registry.counter("redis.proxy.route.decisions", "cluster", decision.cluster(), "rule", decision.rule()).increment();
             ByteBuf retryRaw = request.raw().retainedDuplicate();

@@ -11,6 +11,7 @@ import (
 
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
+	"github.com/example/redis-proxy-dataplane-go/internal/governance"
 	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
 )
 
@@ -24,6 +25,7 @@ type Router struct {
 	defaultCluster string
 	clusters       map[string]config.ClusterConfig
 	rules          []config.RouteRuleConfig
+	governance     config.GovernanceConfig
 	states         map[string]*clusterState
 }
 
@@ -40,6 +42,7 @@ type SnapshotInfo struct {
 	DefaultCluster string                   `json:"defaultCluster"`
 	RouteClusters  []string                 `json:"routeClusters"`
 	Rules          []config.RouteRuleConfig `json:"rules"`
+	Governance     map[string]any           `json:"governance"`
 }
 
 type Manager struct {
@@ -67,6 +70,7 @@ func New(cfg *config.Config) (*Router, error) {
 		defaultCluster: cfg.Routing.DefaultCluster,
 		clusters:       clusters,
 		rules:          append([]config.RouteRuleConfig(nil), cfg.Routing.Rules...),
+		governance:     cfg.Governance,
 		states:         states,
 	}, nil
 }
@@ -107,6 +111,10 @@ func (m *Manager) RefreshSlots(pools *backend.Pools) error {
 
 func (m *Manager) SnapshotInfo() SnapshotInfo {
 	return m.Current().SnapshotInfo()
+}
+
+func (m *Manager) Governance() config.GovernanceConfig {
+	return m.Current().governance
 }
 
 func (m *Manager) CurrentEpoch() int64 {
@@ -477,6 +485,7 @@ func (r *Router) SnapshotInfo() SnapshotInfo {
 		DefaultCluster: r.defaultCluster,
 		RouteClusters:  r.RouteClusters(),
 		Rules:          append([]config.RouteRuleConfig(nil), r.rules...),
+		Governance:     governance.Summary(r.governance),
 	}
 }
 

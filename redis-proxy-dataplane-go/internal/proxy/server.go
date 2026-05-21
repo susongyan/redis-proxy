@@ -14,6 +14,7 @@ import (
 
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
+	"github.com/example/redis-proxy-dataplane-go/internal/governance"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
 	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
 	"github.com/example/redis-proxy-dataplane-go/internal/router"
@@ -116,6 +117,7 @@ func (s *Server) handle(conn net.Conn) {
 
 	br := bufio.NewReader(conn)
 	var seq uint64
+	namespace := ""
 	affinity := s.clientID.Add(1)
 	for {
 		select {
@@ -148,6 +150,26 @@ func (s *Server) handle(conn net.Conn) {
 		if int(pending.Load()) > s.cfg.Limits.MaxPipelineDepth {
 			s.metrics.Errors.WithLabelValues("pipeline_limit").Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: errors.New("pipeline depth exceeded"), start: start})
+			continue
+		}
+
+		govCfg := s.router.Governance()
+		if govCfg.Enabled && cmd == "AUTH" {
+			auth := governance.Authenticate(govCfg, req)
+			s.metrics.Auth.WithLabelValues(auth.Namespace, auth.Result).Inc()
+			if auth.Allowed {
+				namespace = auth.Namespace
+			}
+			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: auth.Response, start: start})
+			continue
+		}
+		govDecision := governance.Evaluate(govCfg, namespace, req)
+		if govDecision.Warn {
+			s.metrics.GovernanceWarns.WithLabelValues(govDecision.Namespace, cmd, govDecision.WarnReason).Inc()
+		}
+		if govDecision.Action != governance.Allow {
+			s.metrics.GovernanceRejects.WithLabelValues(govDecision.Namespace, cmd, govDecision.Reason).Inc()
+			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: govDecision.Response, start: start})
 			continue
 		}
 

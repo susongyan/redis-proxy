@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,6 +17,7 @@ type Config struct {
 	Routing      RoutingConfig      `yaml:"routing" json:"routing"`
 	Limits       LimitsConfig       `yaml:"limits" json:"limits"`
 	ControlPlane ControlPlaneConfig `yaml:"controlPlane" json:"controlPlane"`
+	Governance   GovernanceConfig   `yaml:"governance" json:"governance"`
 }
 
 type ServerConfig struct {
@@ -70,6 +72,27 @@ type ControlPlaneConfig struct {
 	RequestTimeoutMillis int    `yaml:"requestTimeoutMillis" json:"requestTimeoutMillis"`
 }
 
+type GovernanceConfig struct {
+	Enabled       bool                `yaml:"enabled" json:"enabled"`
+	RequireAuth   bool                `yaml:"requireAuth" json:"requireAuth"`
+	CommandPolicy CommandPolicyConfig `yaml:"commandPolicy" json:"commandPolicy"`
+	Namespaces    []NamespaceConfig   `yaml:"namespaces" json:"namespaces"`
+}
+
+type CommandPolicyConfig struct {
+	DeniedCommands   []string `yaml:"deniedCommands" json:"deniedCommands"`
+	WarnOnlyCommands []string `yaml:"warnOnlyCommands" json:"warnOnlyCommands"`
+}
+
+type NamespaceConfig struct {
+	Name               string   `yaml:"name" json:"name"`
+	Token              string   `yaml:"token" json:"token"`
+	ReadOnly           bool     `yaml:"readOnly" json:"readOnly"`
+	AllowedKeyPrefixes []string `yaml:"allowedKeyPrefixes" json:"allowedKeyPrefixes"`
+	DeniedCommands     []string `yaml:"deniedCommands" json:"deniedCommands"`
+	WarnOnlyCommands   []string `yaml:"warnOnlyCommands" json:"warnOnlyCommands"`
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -114,6 +137,21 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.ControlPlane.RequestTimeoutMillis == 0 {
 		cfg.ControlPlane.RequestTimeoutMillis = 1000
+	}
+	if cfg.Governance.Enabled && !cfg.Governance.RequireAuth {
+		cfg.Governance.RequireAuth = true
+	}
+	if len(cfg.Governance.CommandPolicy.DeniedCommands) == 0 {
+		cfg.Governance.CommandPolicy.DeniedCommands = []string{"FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"}
+	}
+	if len(cfg.Governance.CommandPolicy.WarnOnlyCommands) == 0 {
+		cfg.Governance.CommandPolicy.WarnOnlyCommands = []string{"KEYS", "EVAL", "SCRIPT"}
+	}
+	normalizeCommands(&cfg.Governance.CommandPolicy.DeniedCommands)
+	normalizeCommands(&cfg.Governance.CommandPolicy.WarnOnlyCommands)
+	for i := range cfg.Governance.Namespaces {
+		normalizeCommands(&cfg.Governance.Namespaces[i].DeniedCommands)
+		normalizeCommands(&cfg.Governance.Namespaces[i].WarnOnlyCommands)
 	}
 }
 
@@ -178,5 +216,53 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("routing rule %q must set keyPrefix or hashTag", rule.Name)
 		}
 	}
+	if err := c.validateGovernance(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c *Config) validateGovernance() error {
+	seen := map[string]bool{}
+	for _, namespace := range c.Governance.Namespaces {
+		if namespace.Name == "" {
+			return errors.New("governance.namespaces.name is required")
+		}
+		if namespace.Token == "" {
+			return fmt.Errorf("governance namespace %q token is required", namespace.Name)
+		}
+		if seen[namespace.Name] {
+			return fmt.Errorf("duplicate governance namespace %q", namespace.Name)
+		}
+		seen[namespace.Name] = true
+		for _, command := range append(append([]string{}, namespace.DeniedCommands...), namespace.WarnOnlyCommands...) {
+			if !validCommand(command) {
+				return fmt.Errorf("governance namespace %q has invalid command %q", namespace.Name, command)
+			}
+		}
+	}
+	for _, command := range append(append([]string{}, c.Governance.CommandPolicy.DeniedCommands...), c.Governance.CommandPolicy.WarnOnlyCommands...) {
+		if !validCommand(command) {
+			return fmt.Errorf("governance commandPolicy has invalid command %q", command)
+		}
+	}
+	return nil
+}
+
+func normalizeCommands(commands *[]string) {
+	for i, command := range *commands {
+		(*commands)[i] = strings.ToUpper(strings.TrimSpace(command))
+	}
+}
+
+func validCommand(command string) bool {
+	if command == "" {
+		return false
+	}
+	for _, r := range command {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
