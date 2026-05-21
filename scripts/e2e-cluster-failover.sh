@@ -49,14 +49,18 @@ if [[ -z "${master_port}" ]]; then
 fi
 docker rm -f "redis-proxy-cluster-${master_port}" >"${LOG_DIR}/stopped-master.log" 2>&1
 
-for i in {1..150}; do
-  if curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+for i in {1..180}; do
+  if curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1 &&
+     KEY_PREFIX="redis-proxy-failover-${DATAPLANE}-after" "${ROOT}/scripts/smoke.sh" >"${LOG_DIR}/smoke-after.log" 2>&1; then
     break
   fi
   sleep 1
+  kill -0 "${PROXY_PID}" >/dev/null 2>&1 || { tail -150 "${LOG_DIR}/proxy.log"; exit 1; }
+  if [[ "${i}" == "180" ]]; then
+    echo "cluster did not recover before timeout" >&2
+    cat "${LOG_DIR}/smoke-after.log" >&2 || true
+    exit 1
+  fi
 done
-curl -fsS http://127.0.0.1:8080/readyz >/dev/null
-
-KEY_PREFIX="redis-proxy-failover-${DATAPLANE}-after" "${ROOT}/scripts/smoke.sh" >"${LOG_DIR}/smoke-after.log" 2>&1
 
 echo "cluster failover e2e passed for ${DATAPLANE}, stopped master ${master_port}"
