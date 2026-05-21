@@ -51,6 +51,31 @@ func TestHotKeyTrackerMetricsAndCapacity(t *testing.T) {
 	}
 }
 
+func TestHotKeyTrackerSlidingWindowExpiresOldCounts(t *testing.T) {
+	reg := metrics.NewRegistry()
+	tracker := NewHotKeyTracker(reg)
+	now := time.Unix(0, 0)
+	tracker.now = func() time.Time { return now }
+
+	tracker.Observe("app-a", request("GET", "key-1"))
+	now = now.Add(59 * time.Second)
+	tracker.Observe("app-a", request("GET", "key-2"))
+
+	top := tracker.Snapshot(10)
+	if len(top) != 2 {
+		t.Fatalf("top len before expiry=%d want 2: %+v", len(top), top)
+	}
+
+	now = now.Add(2 * time.Second)
+	top = tracker.Snapshot(10)
+	if len(top) != 1 || top[0].Key != "key-2" || top[0].Count != 1 {
+		t.Fatalf("top after expiry=%+v", top)
+	}
+	if got := testutil.ToFloat64(reg.HotKeyTracked); got != 1 {
+		t.Fatalf("tracked after expiry=%v want 1", got)
+	}
+}
+
 func request(args ...string) protocol.Request {
 	values := make([][]byte, 0, len(args))
 	for _, arg := range args {

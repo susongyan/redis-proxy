@@ -14,6 +14,8 @@ import (
 const (
 	defaultMaxTrackedHotKeys = 10000
 	defaultHotKeyMetricsTopN = 20
+	defaultHotKeyWindow      = 60 * time.Second
+	defaultHotKeyBucket      = time.Second
 )
 
 type HotKeyTracker struct {
@@ -21,7 +23,10 @@ type HotKeyTracker struct {
 	reg            *metrics.Registry
 	maxTracked     int
 	metricsTopN    int
-	counts         map[hotKey]int64
+	window         time.Duration
+	bucket         time.Duration
+	bucketCount    int
+	counts         map[hotKey]*hotKeyWindow
 	lastMetricKeys []hotKeyMetricLabel
 	lastRefresh    time.Time
 	now            func() time.Time
@@ -45,12 +50,25 @@ type HotKeyEntry struct {
 	Count     int64  `json:"count"`
 }
 
+type hotKeyWindow struct {
+	buckets []hotKeyBucket
+}
+
+type hotKeyBucket struct {
+	index int64
+	count int64
+}
+
 func NewHotKeyTracker(reg *metrics.Registry) *HotKeyTracker {
+	bucketCount := int(defaultHotKeyWindow / defaultHotKeyBucket)
 	return &HotKeyTracker{
 		reg:         reg,
 		maxTracked:  defaultMaxTrackedHotKeys,
 		metricsTopN: defaultHotKeyMetricsTopN,
-		counts:      map[hotKey]int64{},
+		window:      defaultHotKeyWindow,
+		bucket:      defaultHotKeyBucket,
+		bucketCount: bucketCount,
+		counts:      map[hotKey]*hotKeyWindow{},
 		now:         time.Now,
 	}
 }
@@ -66,17 +84,25 @@ func (t *HotKeyTracker) Observe(namespace string, req protocol.Request) {
 	command := req.Command()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
+	currentBucket := now.UnixNano() / t.bucket.Nanoseconds()
 	for _, raw := range keys {
 		item := hotKey{Namespace: namespace, Command: command, Key: string(raw)}
-		if _, ok := t.counts[item]; !ok && len(t.counts) >= t.maxTracked {
+		window := t.counts[item]
+		if window == nil && len(t.counts) >= t.maxTracked {
 			t.reg.HotKeyDropped.WithLabelValues(namespace, command).Inc()
 			continue
 		}
-		t.counts[item]++
+		if window == nil {
+			window = newHotKeyWindow(t.bucketCount)
+			t.counts[item] = window
+		}
+		window.increment(currentBucket)
 		t.reg.HotKeyObserved.WithLabelValues(namespace, command).Inc()
 	}
+	t.pruneLocked(currentBucket)
 	t.reg.HotKeyTracked.Set(float64(len(t.counts)))
-	if now := t.now(); t.lastRefresh.IsZero() || now.Sub(t.lastRefresh) >= time.Second {
+	if t.lastRefresh.IsZero() || now.Sub(t.lastRefresh) >= time.Second {
 		t.refreshMetricsLocked(defaultHotKeyMetricsTopN)
 		t.lastRefresh = now
 	}
@@ -91,6 +117,8 @@ func (t *HotKeyTracker) Snapshot(limit int) []HotKeyEntry {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.pruneLocked(t.now().UnixNano() / t.bucket.Nanoseconds())
+	t.reg.HotKeyTracked.Set(float64(len(t.counts)))
 	return t.topLocked(limit)
 }
 
@@ -110,9 +138,22 @@ func (t *HotKeyTracker) refreshMetricsLocked(limit int) {
 	}
 }
 
+func (t *HotKeyTracker) pruneLocked(currentBucket int64) {
+	for key, window := range t.counts {
+		if window.total(currentBucket, t.bucketCount) == 0 {
+			delete(t.counts, key)
+		}
+	}
+}
+
 func (t *HotKeyTracker) topLocked(limit int) []HotKeyEntry {
 	entries := make([]HotKeyEntry, 0, len(t.counts))
-	for item, count := range t.counts {
+	currentBucket := t.now().UnixNano() / t.bucket.Nanoseconds()
+	for item, window := range t.counts {
+		count := window.total(currentBucket, t.bucketCount)
+		if count == 0 {
+			continue
+		}
 		entries = append(entries, HotKeyEntry{
 			Namespace: item.Namespace,
 			Command:   item.Command,
@@ -136,4 +177,30 @@ func (t *HotKeyTracker) topLocked(limit int) []HotKeyEntry {
 		entries = entries[:limit]
 	}
 	return entries
+}
+
+func newHotKeyWindow(bucketCount int) *hotKeyWindow {
+	window := &hotKeyWindow{buckets: make([]hotKeyBucket, bucketCount)}
+	for i := range window.buckets {
+		window.buckets[i].index = -1
+	}
+	return window
+}
+
+func (w *hotKeyWindow) increment(bucket int64) {
+	slot := int(bucket % int64(len(w.buckets)))
+	if w.buckets[slot].index != bucket {
+		w.buckets[slot] = hotKeyBucket{index: bucket}
+	}
+	w.buckets[slot].count++
+}
+
+func (w *hotKeyWindow) total(currentBucket int64, bucketCount int) int64 {
+	var total int64
+	for _, bucket := range w.buckets {
+		if bucket.index >= 0 && currentBucket-bucket.index < int64(bucketCount) {
+			total += bucket.count
+		}
+	}
+	return total
 }

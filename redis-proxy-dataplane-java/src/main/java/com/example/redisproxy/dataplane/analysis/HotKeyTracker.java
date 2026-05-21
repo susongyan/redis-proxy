@@ -19,14 +19,18 @@ import org.springframework.stereotype.Component;
 public class HotKeyTracker {
     private static final int DEFAULT_MAX_TRACKED = 10_000;
     private static final int DEFAULT_METRICS_TOP_N = 20;
+    private static final long DEFAULT_WINDOW_MILLIS = 60_000;
+    private static final long DEFAULT_BUCKET_MILLIS = 1_000;
 
     private final MeterRegistry registry;
-    private final Map<KeyId, Long> counts = new HashMap<>();
+    private final Map<KeyId, Window> counts = new HashMap<>();
     private final List<Meter> topMeters = new ArrayList<>();
     private final AtomicInteger trackedKeys = new AtomicInteger();
     private Clock clock = Clock.systemUTC();
     private long lastRefreshMillis;
     private int maxTracked = DEFAULT_MAX_TRACKED;
+    private long bucketMillis = DEFAULT_BUCKET_MILLIS;
+    private int bucketCount = (int) (DEFAULT_WINDOW_MILLIS / DEFAULT_BUCKET_MILLIS);
 
     public HotKeyTracker(MeterRegistry registry) {
         this.registry = registry;
@@ -39,20 +43,27 @@ public class HotKeyTracker {
             return;
         }
         String command = request.command();
+        long nowMillis = clock.millis();
+        long currentBucket = nowMillis / bucketMillis;
         for (byte[] raw : keys.keys()) {
             KeyId key = new KeyId(namespace, command, new String(raw, StandardCharsets.UTF_8));
-            if (!counts.containsKey(key) && counts.size() >= maxTracked) {
+            Window window = counts.get(key);
+            if (window == null && counts.size() >= maxTracked) {
                 registry.counter("redis.proxy.hot.key.dropped", "namespace", namespace, "command", command).increment();
                 continue;
             }
-            counts.put(key, counts.getOrDefault(key, 0L) + 1);
+            if (window == null) {
+                window = new Window(bucketCount);
+                counts.put(key, window);
+            }
+            window.increment(currentBucket);
             registry.counter("redis.proxy.hot.key.observed", "namespace", namespace, "command", command).increment();
         }
+        prune(currentBucket);
         trackedKeys.set(counts.size());
-        long now = clock.millis();
-        if (lastRefreshMillis == 0 || now - lastRefreshMillis >= 1000) {
+        if (lastRefreshMillis == 0 || nowMillis - lastRefreshMillis >= 1000) {
             refreshMetrics();
-            lastRefreshMillis = now;
+            lastRefreshMillis = nowMillis;
         }
     }
 
@@ -60,6 +71,8 @@ public class HotKeyTracker {
         if (limit <= 0) {
             limit = DEFAULT_METRICS_TOP_N;
         }
+        prune(clock.millis() / bucketMillis);
+        trackedKeys.set(counts.size());
         return top(limit);
     }
 
@@ -69,6 +82,13 @@ public class HotKeyTracker {
 
     void setMaxTracked(int maxTracked) {
         this.maxTracked = maxTracked;
+    }
+
+    void setWindow(long windowMillis, long bucketMillis) {
+        this.bucketMillis = bucketMillis;
+        this.bucketCount = Math.max(1, (int) (windowMillis / bucketMillis));
+        this.counts.clear();
+        this.trackedKeys.set(0);
     }
 
     private void refreshMetrics() {
@@ -92,8 +112,10 @@ public class HotKeyTracker {
     }
 
     private List<Entry> top(int limit) {
+        long currentBucket = clock.millis() / bucketMillis;
         return counts.entrySet().stream()
-                .map(item -> new Entry(item.getKey().namespace(), item.getKey().command(), item.getKey().key(), item.getValue()))
+                .map(item -> new Entry(item.getKey().namespace(), item.getKey().command(), item.getKey().key(), item.getValue().total(currentBucket, bucketCount)))
+                .filter(entry -> entry.count() > 0)
                 .sorted(Comparator.comparingLong(Entry::count).reversed()
                         .thenComparing(Entry::namespace)
                         .thenComparing(Entry::command)
@@ -102,9 +124,52 @@ public class HotKeyTracker {
                 .toList();
     }
 
+    private void prune(long currentBucket) {
+        counts.entrySet().removeIf(item -> item.getValue().total(currentBucket, bucketCount) == 0);
+    }
+
     private record KeyId(String namespace, String command, String key) {
     }
 
     public record Entry(String namespace, String command, String key, long count) {
+    }
+
+    private static final class Window {
+        private final Bucket[] buckets;
+
+        private Window(int bucketCount) {
+            this.buckets = new Bucket[bucketCount];
+            for (int i = 0; i < bucketCount; i++) {
+                this.buckets[i] = new Bucket(-1, 0);
+            }
+        }
+
+        private void increment(long bucket) {
+            int slot = (int) (bucket % buckets.length);
+            if (buckets[slot].index != bucket) {
+                buckets[slot] = new Bucket(bucket, 0);
+            }
+            buckets[slot].count++;
+        }
+
+        private long total(long currentBucket, int bucketCount) {
+            long total = 0;
+            for (Bucket bucket : buckets) {
+                if (bucket.index >= 0 && currentBucket - bucket.index < bucketCount) {
+                    total += bucket.count;
+                }
+            }
+            return total;
+        }
+    }
+
+    private static final class Bucket {
+        private final long index;
+        private long count;
+
+        private Bucket(long index, long count) {
+            this.index = index;
+            this.count = count;
+        }
     }
 }
