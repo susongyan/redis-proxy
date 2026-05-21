@@ -5,38 +5,43 @@ import (
 )
 
 type Registry struct {
-	Prom                  *prometheus.Registry
-	Requests              *prometheus.CounterVec
-	Errors                *prometheus.CounterVec
-	Latency               *prometheus.HistogramVec
-	BackendLatency        *prometheus.HistogramVec
-	ActiveConns           prometheus.Gauge
-	BackendConns          prometheus.Gauge
-	BackendConnsByNode    *prometheus.GaugeVec
-	BackendDesired        *prometheus.GaugeVec
-	BackendInflight       prometheus.Gauge
-	BackendInflightByNode *prometheus.GaugeVec
-	ClientPending         prometheus.Gauge
-	Moved                 prometheus.Counter
-	Ask                   prometheus.Counter
-	AskRedirects          *prometheus.CounterVec
-	SlotCoverage          prometheus.Gauge
-	RouteEpoch            prometheus.Gauge
-	RouteDecisions        *prometheus.CounterVec
-	RouteSnapshotUpdates  *prometheus.CounterVec
-	RouteSnapshotRejects  *prometheus.CounterVec
-	RouteSnapshotTime     prometheus.Gauge
-	SlotRefreshes         *prometheus.CounterVec
-	SlotRefreshTime       prometheus.Gauge
-	BackendReconnects     *prometheus.CounterVec
-	BackendReconnecting   *prometheus.GaugeVec
-	BackendUnavailable    *prometheus.CounterVec
-	Auth                  *prometheus.CounterVec
-	GovernanceRejects     *prometheus.CounterVec
-	GovernanceWarns       *prometheus.CounterVec
-	NamespaceConnections  *prometheus.GaugeVec
-	NamespaceInflight     *prometheus.GaugeVec
-	KeyGovernanceRejects  *prometheus.CounterVec
+	Prom                   *prometheus.Registry
+	Requests               *prometheus.CounterVec
+	Errors                 *prometheus.CounterVec
+	Latency                *prometheus.HistogramVec
+	BackendLatency         *prometheus.HistogramVec
+	ActiveConns            prometheus.Gauge
+	BackendConns           prometheus.Gauge
+	BackendConnsByNode     *prometheus.GaugeVec
+	BackendDesired         *prometheus.GaugeVec
+	BackendInflight        prometheus.Gauge
+	BackendInflightByNode  *prometheus.GaugeVec
+	ClientPending          prometheus.Gauge
+	Moved                  prometheus.Counter
+	Ask                    prometheus.Counter
+	AskRedirects           *prometheus.CounterVec
+	SlotCoverage           prometheus.Gauge
+	RouteEpoch             prometheus.Gauge
+	RouteDecisions         *prometheus.CounterVec
+	RouteSnapshotUpdates   *prometheus.CounterVec
+	RouteSnapshotRejects   *prometheus.CounterVec
+	RouteSnapshotTime      prometheus.Gauge
+	SlotRefreshes          *prometheus.CounterVec
+	SlotRefreshTime        prometheus.Gauge
+	BackendReconnects      *prometheus.CounterVec
+	BackendReconnecting    *prometheus.GaugeVec
+	BackendUnavailable     *prometheus.CounterVec
+	Auth                   *prometheus.CounterVec
+	GovernanceRejects      *prometheus.CounterVec
+	GovernanceWarns        *prometheus.CounterVec
+	NamespaceConnections   *prometheus.GaugeVec
+	NamespaceInflight      *prometheus.GaugeVec
+	NamespaceLimitConfig   *prometheus.GaugeVec
+	NamespaceLimitRejects  *prometheus.CounterVec
+	KeyGovernanceRejects   *prometheus.CounterVec
+	KeyGovernanceDecisions *prometheus.CounterVec
+	KeyLimitConfig         *prometheus.GaugeVec
+	KeyLimitWindowUsage    *prometheus.GaugeVec
 }
 
 func NewRegistry() *Registry {
@@ -71,7 +76,12 @@ func NewRegistry() *Registry {
 	r.GovernanceWarns = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_governance_warn_total", Help: "Requests matched warn-only proxy governance"}, []string{"namespace", "command", "reason"})
 	r.NamespaceConnections = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_namespace_connections", Help: "Authenticated client connections by namespace"}, []string{"namespace"})
 	r.NamespaceInflight = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_namespace_inflight", Help: "Inflight proxied requests by namespace"}, []string{"namespace"})
+	r.NamespaceLimitConfig = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_namespace_limit_config", Help: "Configured namespace limits by namespace and limit type"}, []string{"namespace", "limit"})
+	r.NamespaceLimitRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_namespace_limit_reject_total", Help: "Requests or auth attempts rejected by namespace limits"}, []string{"namespace", "limit"})
 	r.KeyGovernanceRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_key_governance_reject_total", Help: "Requests rejected by key governance"}, []string{"namespace", "rule", "command", "reason"})
+	r.KeyGovernanceDecisions = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_key_governance_decisions_total", Help: "Key governance rule decisions by namespace, rule and result"}, []string{"namespace", "rule", "command", "result", "reason"})
+	r.KeyLimitConfig = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_key_limit_config", Help: "Configured key rule QPS limits by namespace and rule"}, []string{"namespace", "rule"})
+	r.KeyLimitWindowUsage = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_key_limit_window_usage", Help: "Current key rule sliding window usage by namespace and rule"}, []string{"namespace", "rule"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -105,7 +115,12 @@ func NewRegistry() *Registry {
 		r.GovernanceWarns,
 		r.NamespaceConnections,
 		r.NamespaceInflight,
+		r.NamespaceLimitConfig,
+		r.NamespaceLimitRejects,
 		r.KeyGovernanceRejects,
+		r.KeyGovernanceDecisions,
+		r.KeyLimitConfig,
+		r.KeyLimitWindowUsage,
 	)
 	return r
 }

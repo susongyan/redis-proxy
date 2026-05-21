@@ -45,7 +45,7 @@ type completion struct {
 }
 
 func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func()) *Server {
-	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter()}
+	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg)}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -165,6 +165,7 @@ func (s *Server) handle(conn net.Conn) {
 				if ok, reason := s.nsLimiter.bind(namespace, next); !ok {
 					s.metrics.Auth.WithLabelValues(auth.Namespace, reason).Inc()
 					s.metrics.GovernanceRejects.WithLabelValues(auth.Namespace, cmd, reason).Inc()
+					s.metrics.NamespaceLimitRejects.WithLabelValues(auth.Namespace, "connections").Inc()
 					s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: []byte("-ERR namespace connection limit exceeded\r\n"), start: start})
 					continue
 				}
@@ -185,6 +186,7 @@ func (s *Server) handle(conn net.Conn) {
 		namespaceCfg, _ := governance.Namespace(govCfg, namespace)
 		if ok, reason := s.nsLimiter.allowRequest(namespaceCfg); !ok {
 			s.metrics.GovernanceRejects.WithLabelValues(namespace, cmd, reason).Inc()
+			s.metrics.NamespaceLimitRejects.WithLabelValues(namespace, namespaceLimitLabel(reason)).Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: []byte("-ERR request limited by proxy governance\r\n"), start: start})
 			continue
 		}
@@ -215,6 +217,19 @@ func (s *Server) handle(conn net.Conn) {
 			s.metrics.Errors.WithLabelValues("backend").Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start})
 		}
+	}
+}
+
+func namespaceLimitLabel(reason string) string {
+	switch reason {
+	case "connection_limit":
+		return "connections"
+	case "qps_limit":
+		return "qps"
+	case "inflight_limit":
+		return "inflight"
+	default:
+		return reason
 	}
 }
 

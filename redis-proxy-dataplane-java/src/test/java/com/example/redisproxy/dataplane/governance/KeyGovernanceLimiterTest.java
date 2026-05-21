@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.Unpooled;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -16,7 +17,7 @@ import org.junit.jupiter.api.Test;
 class KeyGovernanceLimiterTest {
     @Test
     void rejectsDisabledExactKey() {
-        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter();
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
 
         KeyGovernanceLimiter.Decision decision = limiter.evaluate(governance(), namespace(), request("GET", "app-a:blocked"));
 
@@ -26,7 +27,7 @@ class KeyGovernanceLimiterTest {
 
     @Test
     void rejectsDisabledRule() {
-        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter();
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
 
         KeyGovernanceLimiter.Decision decision = limiter.evaluate(governance(), namespace(), request("GET", "app-a:disabled:1"));
 
@@ -37,7 +38,7 @@ class KeyGovernanceLimiterTest {
 
     @Test
     void limitsWithSlidingWindowAndRecoversAfterWindow() {
-        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter();
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
         limiter.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
         ProxyProperties.Governance governance = governance();
         ProxyProperties.Namespace namespace = namespace();
@@ -51,7 +52,7 @@ class KeyGovernanceLimiterTest {
 
     @Test
     void rejectsWholeMultiKeyCommand() {
-        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter();
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
 
         KeyGovernanceLimiter.Decision decision = limiter.evaluate(governance(), namespace(), request("MGET", "app-a:1", "app-a:blocked"));
 
@@ -61,12 +62,29 @@ class KeyGovernanceLimiterTest {
 
     @Test
     void failsClosedWhenKeysAreUnsupported() {
-        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter();
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
 
         KeyGovernanceLimiter.Decision decision = limiter.evaluate(governance(), namespace(), request("SCAN", "0"));
 
         assertThat(decision.allowed()).isFalse();
         assertThat(decision.reason()).isEqualTo("key_policy_unsupported");
+    }
+
+    @Test
+    void recordsDecisionAndLimitMetrics() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(registry);
+        limiter.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
+        ProxyProperties.Governance governance = governance();
+        ProxyProperties.Namespace namespace = namespace();
+
+        assertThat(limiter.evaluate(governance, namespace, request("GET", "app-a:hot:1")).allowed()).isTrue();
+        assertThat(registry.get("redis.proxy.key.limit.config").tag("namespace", "app-a").tag("rule", "hot").gauge().value()).isEqualTo(1.0);
+        assertThat(registry.get("redis.proxy.key.limit.window.usage").tag("namespace", "app-a").tag("rule", "hot").gauge().value()).isEqualTo(1.0);
+        assertThat(registry.get("redis.proxy.key.governance.decisions").tag("namespace", "app-a").tag("rule", "hot").tag("command", "GET").tag("result", "allow").tag("reason", "").counter().count()).isEqualTo(1.0);
+
+        assertThat(limiter.evaluate(governance, namespace, request("GET", "app-a:hot:2")).allowed()).isFalse();
+        assertThat(registry.get("redis.proxy.key.governance.decisions").tag("namespace", "app-a").tag("rule", "hot").tag("command", "GET").tag("result", "reject").tag("reason", "qps_limit").counter().count()).isEqualTo(1.0);
     }
 
     private static ProxyProperties.Governance governance() {

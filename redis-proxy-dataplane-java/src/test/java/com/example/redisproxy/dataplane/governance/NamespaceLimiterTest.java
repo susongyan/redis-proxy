@@ -49,6 +49,22 @@ class NamespaceLimiterTest {
         assertThat(limiter.allowRequest(namespace).allowed()).isTrue();
     }
 
+    @Test
+    void recordsLimitConfigMetrics() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        NamespaceLimiter limiter = new NamespaceLimiter(registry);
+        ProxyProperties.Namespace namespace = namespace("app-a");
+        namespace.getLimits().setMaxConnections(2);
+        namespace.getLimits().setMaxQps(3);
+        namespace.getLimits().setMaxInflight(4);
+
+        assertThat(limiter.bind("", namespace).allowed()).isTrue();
+
+        assertThat(registry.get("redis.proxy.namespace.limit.config").tag("namespace", "app-a").tag("limit", "connections").gauge().value()).isEqualTo(2.0);
+        assertThat(registry.get("redis.proxy.namespace.limit.config").tag("namespace", "app-a").tag("limit", "qps").gauge().value()).isEqualTo(3.0);
+        assertThat(registry.get("redis.proxy.namespace.limit.config").tag("namespace", "app-a").tag("limit", "inflight").gauge().value()).isEqualTo(4.0);
+    }
+
     private static ProxyProperties.Namespace namespace(String name) {
         ProxyProperties.Namespace namespace = new ProxyProperties.Namespace();
         namespace.setName(name);

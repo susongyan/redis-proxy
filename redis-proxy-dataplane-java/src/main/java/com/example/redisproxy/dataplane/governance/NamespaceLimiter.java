@@ -18,6 +18,7 @@ public class NamespaceLimiter {
     private final Map<String, QpsWindow> qpsWindows = new HashMap<>();
     private final Map<String, AtomicInteger> connectionGauges = new HashMap<>();
     private final Map<String, AtomicInteger> inflightGauges = new HashMap<>();
+    private final Map<String, AtomicInteger> limitConfigGauges = new HashMap<>();
     private Clock clock = Clock.systemUTC();
 
     public NamespaceLimiter(MeterRegistry registry) {
@@ -29,6 +30,7 @@ public class NamespaceLimiter {
             return LimitResult.allow();
         }
         String namespace = next.getName();
+        observeLimits(next);
         if (next.getLimits().getMaxConnections() > 0 && connections.getOrDefault(namespace, 0) >= next.getLimits().getMaxConnections()) {
             return LimitResult.rejected("connection_limit");
         }
@@ -57,6 +59,7 @@ public class NamespaceLimiter {
         }
         String name = namespace.getName();
         ProxyProperties.NamespaceLimits limits = namespace.getLimits();
+        observeLimits(namespace);
         long second = clock.millis() / 1000;
         if (limits.getMaxQps() > 0) {
             QpsWindow window = qpsWindows.get(name);
@@ -94,6 +97,19 @@ public class NamespaceLimiter {
     private AtomicInteger gauge(Map<String, AtomicInteger> gauges, String name, String namespace) {
         return gauges.computeIfAbsent(namespace, key ->
                 registry.gauge(name, List.of(Tag.of("namespace", key)), new AtomicInteger()));
+    }
+
+    private void observeLimits(ProxyProperties.Namespace namespace) {
+        setLimitConfig(namespace.getName(), "connections", namespace.getLimits().getMaxConnections());
+        setLimitConfig(namespace.getName(), "qps", namespace.getLimits().getMaxQps());
+        setLimitConfig(namespace.getName(), "inflight", namespace.getLimits().getMaxInflight());
+    }
+
+    private void setLimitConfig(String namespace, String limit, int value) {
+        String key = namespace + "\u0000" + limit;
+        limitConfigGauges.computeIfAbsent(key, ignored ->
+                registry.gauge("redis.proxy.namespace.limit.config", List.of(Tag.of("namespace", namespace), Tag.of("limit", limit)), new AtomicInteger()))
+                .set(value);
     }
 
     public record LimitResult(boolean allowed, String reason) {

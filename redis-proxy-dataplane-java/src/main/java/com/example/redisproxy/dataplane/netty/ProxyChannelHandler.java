@@ -70,6 +70,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
                     if (!limit.allowed()) {
                         registry.counter("redis.proxy.auth", "namespace", auth.namespace(), "result", limit.reason()).increment();
                         registry.counter("redis.proxy.governance.reject", "namespace", auth.namespace(), "command", command, "reason", limit.reason()).increment();
+                        registry.counter("redis.proxy.namespace.limit.reject", "namespace", auth.namespace(), "limit", namespaceLimitLabel(limit.reason())).increment();
                         sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer("-ERR namespace connection limit exceeded\r\n", StandardCharsets.US_ASCII), null, command, sample), pending -> flush(ctx, pending));
                         return;
                     }
@@ -92,6 +93,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             NamespaceLimiter.LimitResult limit = namespaceLimiter.allowRequest(namespaceConfig);
             if (!limit.allowed()) {
                 registry.counter("redis.proxy.governance.reject", "namespace", namespace == null ? "" : namespace, "command", command, "reason", limit.reason()).increment();
+                registry.counter("redis.proxy.namespace.limit.reject", "namespace", namespace == null ? "" : namespace, "limit", namespaceLimitLabel(limit.reason())).increment();
                 sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer("-ERR request limited by proxy governance\r\n", StandardCharsets.US_ASCII), null, command, sample), pending -> flush(ctx, pending));
                 return;
             }
@@ -206,5 +208,14 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             }
         }
         return true;
+    }
+
+    private static String namespaceLimitLabel(String reason) {
+        return switch (reason) {
+            case "connection_limit" -> "connections";
+            case "qps_limit" -> "qps";
+            case "inflight_limit" -> "inflight";
+            default -> reason;
+        };
     }
 }

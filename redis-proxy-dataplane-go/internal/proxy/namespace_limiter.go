@@ -36,6 +36,7 @@ func (l *namespaceLimiter) bind(current string, next config.NamespaceConfig) (bo
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.observeLimitsLocked(next)
 	if next.Limits.MaxConnections > 0 && l.conns[next.Name] >= next.Limits.MaxConnections {
 		return false, "connection_limit"
 	}
@@ -67,6 +68,7 @@ func (l *namespaceLimiter) allowRequest(namespace config.NamespaceConfig) (bool,
 	now := time.Now().Unix()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.observeLimitsLocked(namespace)
 	if namespace.Limits.MaxQPS > 0 {
 		window := l.qpsWindows[namespace.Name]
 		if window.second != now {
@@ -97,4 +99,13 @@ func (l *namespaceLimiter) finishRequest(namespace string) {
 		l.inflight[namespace]--
 	}
 	l.reg.NamespaceInflight.WithLabelValues(namespace).Set(float64(l.inflight[namespace]))
+}
+
+func (l *namespaceLimiter) observeLimitsLocked(namespace config.NamespaceConfig) {
+	if namespace.Name == "" {
+		return
+	}
+	l.reg.NamespaceLimitConfig.WithLabelValues(namespace.Name, "connections").Set(float64(namespace.Limits.MaxConnections))
+	l.reg.NamespaceLimitConfig.WithLabelValues(namespace.Name, "qps").Set(float64(namespace.Limits.MaxQPS))
+	l.reg.NamespaceLimitConfig.WithLabelValues(namespace.Name, "inflight").Set(float64(namespace.Limits.MaxInflight))
 }

@@ -224,8 +224,25 @@ governance:
 - namespace 维度支持连接数、秒级 QPS 和 inflight 限制；`0` 表示不限制。
 - key 维度支持精确禁用 `disabledKeys` 和按 `keyPrefix` / `hashTag` 匹配的 `keyRules`；`maxQps` 使用本地滑动窗口计数，默认 `1000ms / 100ms`。
 - 启用 key 治理时，多 key 命令任意 key 命中禁用或限流都会拒绝整个请求；无法识别 key 位置的命令 fail closed。
+- 治理指标按 Go Prometheus 命名和 Java Micrometer 命名分别暴露，语义保持一致：auth、治理拒绝/告警、namespace 当前连接和 inflight、namespace 配置限额和限流拒绝、key rule 决策、key 限额配置和滑动窗口用量。
 - namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
 - 所有切换和治理规则必须可审计、可回滚。
+
+核心治理指标：
+
+| 语义 | Go 指标 | Java 指标 |
+| --- | --- | --- |
+| AUTH 结果 | `redis_proxy_auth_total{namespace,result}` | `redis.proxy.auth{namespace,result}` |
+| 治理拒绝 | `redis_proxy_governance_reject_total{namespace,command,reason}` | `redis.proxy.governance.reject{namespace,command,reason}` |
+| 治理告警 | `redis_proxy_governance_warn_total{namespace,command,reason}` | `redis.proxy.governance.warn{namespace,command,reason}` |
+| namespace 连接数 | `redis_proxy_namespace_connections{namespace}` | `redis.proxy.namespace.connections{namespace}` |
+| namespace inflight | `redis_proxy_namespace_inflight{namespace}` | `redis.proxy.namespace.inflight{namespace}` |
+| namespace 限额配置 | `redis_proxy_namespace_limit_config{namespace,limit}` | `redis.proxy.namespace.limit.config{namespace,limit}` |
+| namespace 限流拒绝 | `redis_proxy_namespace_limit_reject_total{namespace,limit}` | `redis.proxy.namespace.limit.reject{namespace,limit}` |
+| key 治理拒绝 | `redis_proxy_key_governance_reject_total{namespace,rule,command,reason}` | `redis.proxy.key.governance.reject{namespace,rule,command,reason}` |
+| key rule 决策 | `redis_proxy_key_governance_decisions_total{namespace,rule,command,result,reason}` | `redis.proxy.key.governance.decisions{namespace,rule,command,result,reason}` |
+| key 限额配置 | `redis_proxy_key_limit_config{namespace,rule}` | `redis.proxy.key.limit.config{namespace,rule}` |
+| key 滑窗用量 | `redis_proxy_key_limit_window_usage{namespace,rule}` | `redis.proxy.key.limit.window.usage{namespace,rule}` |
 
 ## 本地运行
 
@@ -493,10 +510,11 @@ Slot cache 刷新策略：
 6. 治理规则随 route snapshot 长轮询动态生效，Go / Java 均有 `e2e-governance.sh` 覆盖。
 7. 支持 namespace 维度连接数、QPS、inflight 限制。
 8. 支持 key 精确禁用、keyPrefix/hashTag 规则禁用，以及基于滑动窗口的 key rule QPS 限流。
+9. 补齐治理与限流可观测性：配置限额、当前连接/inflight、限流拒绝、key rule 决策和滑动窗口用量。
 
 待完成：
 
-1. pipeline、请求大小、响应大小治理与 namespace/key 限流指标联动。
+1. pipeline、请求大小、响应大小治理指标联动。
 2. 热 key 采样 TopK 和大 response 阈值告警。
 3. 治理审计持久化、token 加密存储和密钥管理接入。
 

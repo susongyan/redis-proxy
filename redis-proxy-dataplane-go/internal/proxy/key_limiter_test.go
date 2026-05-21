@@ -5,11 +5,13 @@ import (
 	"time"
 
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
+	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
 	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestKeyGovernanceDisabledKey(t *testing.T) {
-	limiter := newKeyGovernanceLimiter()
+	limiter := newKeyGovernanceLimiter(nil)
 	decision := limiter.evaluate(testGovernance(), testNamespace(), request("GET", "app-a:blocked"))
 	if decision.Allowed || decision.Reason != "exact_key_disabled" {
 		t.Fatalf("decision=%+v", decision)
@@ -17,7 +19,7 @@ func TestKeyGovernanceDisabledKey(t *testing.T) {
 }
 
 func TestKeyGovernanceRuleDisabled(t *testing.T) {
-	limiter := newKeyGovernanceLimiter()
+	limiter := newKeyGovernanceLimiter(nil)
 	decision := limiter.evaluate(testGovernance(), testNamespace(), request("GET", "app-a:disabled:1"))
 	if decision.Allowed || decision.Rule != "disabled-prefix" || decision.Reason != "rule_disabled" {
 		t.Fatalf("decision=%+v", decision)
@@ -25,7 +27,7 @@ func TestKeyGovernanceRuleDisabled(t *testing.T) {
 }
 
 func TestKeyGovernanceSlidingWindowLimitAndRecovery(t *testing.T) {
-	limiter := newKeyGovernanceLimiter()
+	limiter := newKeyGovernanceLimiter(nil)
 	now := time.UnixMilli(0)
 	limiter.now = func() time.Time { return now }
 	cfg := testGovernance()
@@ -44,7 +46,7 @@ func TestKeyGovernanceSlidingWindowLimitAndRecovery(t *testing.T) {
 }
 
 func TestKeyGovernanceMultiKeyRejectsWholeCommand(t *testing.T) {
-	limiter := newKeyGovernanceLimiter()
+	limiter := newKeyGovernanceLimiter(nil)
 	decision := limiter.evaluate(testGovernance(), testNamespace(), request("MGET", "app-a:1", "app-a:blocked"))
 	if decision.Allowed || decision.Reason != "exact_key_disabled" {
 		t.Fatalf("decision=%+v", decision)
@@ -52,10 +54,36 @@ func TestKeyGovernanceMultiKeyRejectsWholeCommand(t *testing.T) {
 }
 
 func TestKeyGovernanceUnsupportedCommandFailsClosed(t *testing.T) {
-	limiter := newKeyGovernanceLimiter()
+	limiter := newKeyGovernanceLimiter(nil)
 	decision := limiter.evaluate(testGovernance(), testNamespace(), request("SCAN", "0"))
 	if decision.Allowed || decision.Reason != "key_policy_unsupported" {
 		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestKeyGovernanceObservability(t *testing.T) {
+	reg := metrics.NewRegistry()
+	limiter := newKeyGovernanceLimiter(reg)
+	now := time.UnixMilli(0)
+	limiter.now = func() time.Time { return now }
+	cfg := testGovernance()
+	namespace := testNamespace()
+
+	if decision := limiter.evaluate(cfg, namespace, request("GET", "app-a:hot:1")); !decision.Allowed {
+		t.Fatalf("first decision=%+v", decision)
+	}
+	if got := testutil.ToFloat64(reg.KeyLimitConfig.WithLabelValues("app-a", "hot-prefix")); got != 1 {
+		t.Fatalf("key limit config=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(reg.KeyLimitWindowUsage.WithLabelValues("app-a", "hot-prefix")); got != 1 {
+		t.Fatalf("key window usage=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(reg.KeyGovernanceDecisions.WithLabelValues("app-a", "hot-prefix", "GET", "allow", "")); got != 1 {
+		t.Fatalf("key decision allow=%v want 1", got)
+	}
+	_ = limiter.evaluate(cfg, namespace, request("GET", "app-a:hot:2"))
+	if got := testutil.ToFloat64(reg.KeyGovernanceDecisions.WithLabelValues("app-a", "hot-prefix", "GET", "reject", "qps_limit")); got != 1 {
+		t.Fatalf("key decision reject=%v want 1", got)
 	}
 }
 
