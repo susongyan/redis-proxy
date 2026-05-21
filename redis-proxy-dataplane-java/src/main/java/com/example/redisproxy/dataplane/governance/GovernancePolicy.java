@@ -89,11 +89,19 @@ public final class GovernancePolicy {
                         "readOnly", namespace.isReadOnly(),
                         "allowedKeyPrefixes", namespace.getAllowedKeyPrefixes(),
                         "deniedCommands", namespace.getDeniedCommands(),
-                        "warnOnlyCommands", namespace.getWarnOnlyCommands()))
+                        "warnOnlyCommands", namespace.getWarnOnlyCommands(),
+                        "limits", Map.of(
+                                "maxConnections", namespace.getLimits().getMaxConnections(),
+                                "maxQps", namespace.getLimits().getMaxQps(),
+                                "maxInflight", namespace.getLimits().getMaxInflight()),
+                        "disabledKeys", namespace.getDisabledKeys(),
+                        "keyRules", namespace.getKeyRules()))
                 .toList();
         return Map.of(
                 "enabled", governance.isEnabled(),
                 "requireAuth", governance.isRequireAuth(),
+                "keyLimitWindowMillis", governance.getKeyLimitWindowMillis(),
+                "keyLimitBucketMillis", governance.getKeyLimitBucketMillis(),
                 "commandPolicy", Map.of(
                         "deniedCommands", governance.getCommandPolicy().getDeniedCommands(),
                         "warnOnlyCommands", governance.getCommandPolicy().getWarnOnlyCommands()),
@@ -126,6 +134,10 @@ public final class GovernancePolicy {
     }
 
     private static ProxyProperties.Namespace namespace(ProxyProperties.Governance governance, String name) {
+        return namespaceConfig(governance, name);
+    }
+
+    public static ProxyProperties.Namespace namespaceConfig(ProxyProperties.Governance governance, String name) {
         for (ProxyProperties.Namespace namespace : governance.getNamespaces()) {
             if (namespace.getName().equals(name)) {
                 return namespace;

@@ -104,17 +104,30 @@ func Summary(cfg config.GovernanceConfig) map[string]any {
 			"allowedKeyPrefixes": append([]string(nil), namespace.AllowedKeyPrefixes...),
 			"deniedCommands":     append([]string(nil), namespace.DeniedCommands...),
 			"warnOnlyCommands":   append([]string(nil), namespace.WarnOnlyCommands...),
+			"limits": map[string]int{
+				"maxConnections": namespace.Limits.MaxConnections,
+				"maxQps":         namespace.Limits.MaxQPS,
+				"maxInflight":    namespace.Limits.MaxInflight,
+			},
+			"disabledKeys": append([]string(nil), namespace.DisabledKeys...),
+			"keyRules":     append([]config.KeyRuleConfig(nil), namespace.KeyRules...),
 		})
 	}
 	return map[string]any{
-		"enabled":     cfg.Enabled,
-		"requireAuth": cfg.RequireAuth,
+		"enabled":              cfg.Enabled,
+		"requireAuth":          cfg.RequireAuth,
+		"keyLimitWindowMillis": cfg.KeyLimitWindowMillis,
+		"keyLimitBucketMillis": cfg.KeyLimitBucketMillis,
 		"commandPolicy": map[string]any{
 			"deniedCommands":   append([]string(nil), cfg.CommandPolicy.DeniedCommands...),
 			"warnOnlyCommands": append([]string(nil), cfg.CommandPolicy.WarnOnlyCommands...),
 		},
 		"namespaces": namespaces,
 	}
+}
+
+func HasKeyGovernance(namespace config.NamespaceConfig) bool {
+	return len(namespace.DisabledKeys) > 0 || len(namespace.KeyRules) > 0
 }
 
 func Keys(req protocol.Request) ([][]byte, bool) {
@@ -143,6 +156,10 @@ func Keys(req protocol.Request) ([][]byte, bool) {
 }
 
 func findNamespace(cfg config.GovernanceConfig, name string) (config.NamespaceConfig, bool) {
+	return Namespace(cfg, name)
+}
+
+func Namespace(cfg config.GovernanceConfig, name string) (config.NamespaceConfig, bool) {
 	for _, namespace := range cfg.Namespaces {
 		if namespace.Name == name {
 			return namespace, true

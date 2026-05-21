@@ -2,6 +2,8 @@ package com.example.redisproxy.dataplane.netty;
 
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
+import com.example.redisproxy.dataplane.governance.KeyGovernanceLimiter;
+import com.example.redisproxy.dataplane.governance.NamespaceLimiter;
 import com.example.redisproxy.dataplane.protocol.RespRequestDecoder;
 import com.example.redisproxy.dataplane.router.ClusterSlotRefresher;
 import com.example.redisproxy.dataplane.router.RouteResolver;
@@ -27,6 +29,8 @@ public class NettyProxyServer {
     private final RouteResolver routeResolver;
     private final ClusterSlotRefresher slotRefresher;
     private final BackendPool backendPool;
+    private final NamespaceLimiter namespaceLimiter;
+    private final KeyGovernanceLimiter keyGovernanceLimiter;
     private final MeterRegistry registry;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -34,11 +38,13 @@ public class NettyProxyServer {
     private final AtomicInteger activeConnections = new AtomicInteger();
     private final AtomicInteger pendingClientResponses = new AtomicInteger();
 
-    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, MeterRegistry registry) {
+    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, MeterRegistry registry) {
         this.properties = properties;
         this.routeResolver = routeResolver;
         this.slotRefresher = slotRefresher;
         this.backendPool = backendPool;
+        this.namespaceLimiter = namespaceLimiter;
+        this.keyGovernanceLimiter = keyGovernanceLimiter;
         this.registry = registry;
     }
 
@@ -57,7 +63,7 @@ public class NettyProxyServer {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new RespRequestDecoder(properties.getLimits().getMaxRequestBytes()));
-                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, registry, activeConnections, pendingClientResponses));
+                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, registry, activeConnections, pendingClientResponses));
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress(listen.host(), listen.port())).sync().channel();

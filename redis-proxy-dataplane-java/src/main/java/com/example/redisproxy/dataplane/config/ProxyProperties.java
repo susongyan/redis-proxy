@@ -201,12 +201,18 @@ public class ProxyProperties {
     public static class Governance {
         private boolean enabled;
         private boolean requireAuth;
+        private int keyLimitWindowMillis = 1000;
+        private int keyLimitBucketMillis = 100;
         private CommandPolicy commandPolicy = new CommandPolicy();
         private List<Namespace> namespaces = new ArrayList<>();
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public boolean isRequireAuth() { return requireAuth; }
         public void setRequireAuth(boolean requireAuth) { this.requireAuth = requireAuth; }
+        public int getKeyLimitWindowMillis() { return keyLimitWindowMillis; }
+        public void setKeyLimitWindowMillis(int keyLimitWindowMillis) { this.keyLimitWindowMillis = keyLimitWindowMillis; }
+        public int getKeyLimitBucketMillis() { return keyLimitBucketMillis; }
+        public void setKeyLimitBucketMillis(int keyLimitBucketMillis) { this.keyLimitBucketMillis = keyLimitBucketMillis; }
         public CommandPolicy getCommandPolicy() { return commandPolicy; }
         public void setCommandPolicy(CommandPolicy commandPolicy) { this.commandPolicy = commandPolicy; }
         public List<Namespace> getNamespaces() { return namespaces; }
@@ -215,6 +221,12 @@ public class ProxyProperties {
         void applyDefaults() {
             if (enabled && !requireAuth) {
                 requireAuth = true;
+            }
+            if (keyLimitWindowMillis == 0) {
+                keyLimitWindowMillis = 1000;
+            }
+            if (keyLimitBucketMillis == 0) {
+                keyLimitBucketMillis = 100;
             }
             if (commandPolicy.deniedCommands.isEmpty()) {
                 commandPolicy.deniedCommands = new ArrayList<>(List.of("FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"));
@@ -229,6 +241,9 @@ public class ProxyProperties {
         }
 
         void validate() {
+            if (keyLimitWindowMillis <= 0 || keyLimitBucketMillis <= 0 || keyLimitWindowMillis % keyLimitBucketMillis != 0) {
+                throw new IllegalArgumentException("governance key limit window must be positive and divisible by bucket");
+            }
             Set<String> seen = new HashSet<>();
             commandPolicy.validate("governance.commandPolicy");
             for (Namespace namespace : namespaces) {
@@ -276,6 +291,9 @@ public class ProxyProperties {
         private List<String> allowedKeyPrefixes = new ArrayList<>();
         private List<String> deniedCommands = new ArrayList<>();
         private List<String> warnOnlyCommands = new ArrayList<>();
+        private NamespaceLimits limits = new NamespaceLimits();
+        private List<String> disabledKeys = new ArrayList<>();
+        private List<KeyRule> keyRules = new ArrayList<>();
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
         public String getToken() { return token; }
@@ -288,6 +306,12 @@ public class ProxyProperties {
         public void setDeniedCommands(List<String> deniedCommands) { this.deniedCommands = deniedCommands; }
         public List<String> getWarnOnlyCommands() { return warnOnlyCommands; }
         public void setWarnOnlyCommands(List<String> warnOnlyCommands) { this.warnOnlyCommands = warnOnlyCommands; }
+        public NamespaceLimits getLimits() { return limits; }
+        public void setLimits(NamespaceLimits limits) { this.limits = limits; }
+        public List<String> getDisabledKeys() { return disabledKeys; }
+        public void setDisabledKeys(List<String> disabledKeys) { this.disabledKeys = disabledKeys; }
+        public List<KeyRule> getKeyRules() { return keyRules; }
+        public void setKeyRules(List<KeyRule> keyRules) { this.keyRules = keyRules; }
 
         void normalize() {
             deniedCommands = normalizeCommands(deniedCommands);
@@ -300,6 +324,64 @@ public class ProxyProperties {
             }
             for (String command : warnOnlyCommands) {
                 validateCommand("governance.namespaces.warnOnlyCommands", command);
+            }
+            limits.validate(name);
+            Set<String> ruleNames = new HashSet<>();
+            for (KeyRule rule : keyRules) {
+                rule.validate(name, ruleNames);
+            }
+        }
+    }
+
+    public static class NamespaceLimits {
+        private int maxConnections;
+        private int maxQps;
+        private int maxInflight;
+        public int getMaxConnections() { return maxConnections; }
+        public void setMaxConnections(int maxConnections) { this.maxConnections = maxConnections; }
+        public int getMaxQps() { return maxQps; }
+        public void setMaxQps(int maxQps) { this.maxQps = maxQps; }
+        public int getMaxInflight() { return maxInflight; }
+        public void setMaxInflight(int maxInflight) { this.maxInflight = maxInflight; }
+
+        void validate(String namespace) {
+            if (maxConnections < 0 || maxQps < 0 || maxInflight < 0) {
+                throw new IllegalArgumentException("governance namespace " + namespace + " limits must be >= 0");
+            }
+        }
+    }
+
+    public static class KeyRule {
+        private String name;
+        private String keyPrefix;
+        private String hashTag;
+        private boolean disabled;
+        private int maxQps;
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public String getKeyPrefix() { return keyPrefix; }
+        public void setKeyPrefix(String keyPrefix) { this.keyPrefix = keyPrefix; }
+        public String getHashTag() { return hashTag; }
+        public void setHashTag(String hashTag) { this.hashTag = hashTag; }
+        public boolean isDisabled() { return disabled; }
+        public void setDisabled(boolean disabled) { this.disabled = disabled; }
+        public int getMaxQps() { return maxQps; }
+        public void setMaxQps(int maxQps) { this.maxQps = maxQps; }
+
+        void validate(String namespace, Set<String> seen) {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("governance namespace " + namespace + " keyRules.name is required");
+            }
+            if (!seen.add(name)) {
+                throw new IllegalArgumentException("governance namespace " + namespace + " has duplicate key rule: " + name);
+            }
+            boolean hasKeyPrefix = keyPrefix != null && !keyPrefix.isBlank();
+            boolean hasHashTag = hashTag != null && !hashTag.isBlank();
+            if (!hasKeyPrefix && !hasHashTag) {
+                throw new IllegalArgumentException("governance namespace " + namespace + " key rule " + name + " must set keyPrefix or hashTag");
+            }
+            if (maxQps < 0) {
+                throw new IllegalArgumentException("governance namespace " + namespace + " key rule " + name + " maxQps must be >= 0");
             }
         }
     }

@@ -34,6 +34,9 @@ type Registry struct {
 	Auth                  *prometheus.CounterVec
 	GovernanceRejects     *prometheus.CounterVec
 	GovernanceWarns       *prometheus.CounterVec
+	NamespaceConnections  *prometheus.GaugeVec
+	NamespaceInflight     *prometheus.GaugeVec
+	KeyGovernanceRejects  *prometheus.CounterVec
 }
 
 func NewRegistry() *Registry {
@@ -66,6 +69,9 @@ func NewRegistry() *Registry {
 	r.Auth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_auth_total", Help: "Proxy namespace auth attempts by result"}, []string{"namespace", "result"})
 	r.GovernanceRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_governance_reject_total", Help: "Requests rejected by proxy governance"}, []string{"namespace", "command", "reason"})
 	r.GovernanceWarns = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_governance_warn_total", Help: "Requests matched warn-only proxy governance"}, []string{"namespace", "command", "reason"})
+	r.NamespaceConnections = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_namespace_connections", Help: "Authenticated client connections by namespace"}, []string{"namespace"})
+	r.NamespaceInflight = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_namespace_inflight", Help: "Inflight proxied requests by namespace"}, []string{"namespace"})
+	r.KeyGovernanceRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_key_governance_reject_total", Help: "Requests rejected by key governance"}, []string{"namespace", "rule", "command", "reason"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -97,6 +103,9 @@ func NewRegistry() *Registry {
 		r.Auth,
 		r.GovernanceRejects,
 		r.GovernanceWarns,
+		r.NamespaceConnections,
+		r.NamespaceInflight,
+		r.KeyGovernanceRejects,
 	)
 	return r
 }

@@ -204,6 +204,11 @@ public class ConfigService {
     }
 
     private static void validateGovernance(ProxyConfig.Governance governance) {
+        if (governance.getKeyLimitWindowMillis() <= 0
+                || governance.getKeyLimitBucketMillis() <= 0
+                || governance.getKeyLimitWindowMillis() % governance.getKeyLimitBucketMillis() != 0) {
+            throw new IllegalArgumentException("governance key limit window must be positive and divisible by bucket");
+        }
         validateCommands("governance.commandPolicy.deniedCommands", governance.getCommandPolicy().getDeniedCommands());
         validateCommands("governance.commandPolicy.warnOnlyCommands", governance.getCommandPolicy().getWarnOnlyCommands());
         List<String> seen = new ArrayList<>();
@@ -220,6 +225,37 @@ public class ConfigService {
             seen.add(namespace.getName());
             validateCommands("governance.namespaces.deniedCommands", namespace.getDeniedCommands());
             validateCommands("governance.namespaces.warnOnlyCommands", namespace.getWarnOnlyCommands());
+            validateNamespaceLimits(namespace);
+            validateKeyRules(namespace);
+        }
+    }
+
+    private static void validateNamespaceLimits(ProxyConfig.Namespace namespace) {
+        if (namespace.getLimits().getMaxConnections() < 0
+                || namespace.getLimits().getMaxQps() < 0
+                || namespace.getLimits().getMaxInflight() < 0) {
+            throw new IllegalArgumentException("governance namespace " + namespace.getName() + " limits must be >= 0");
+        }
+    }
+
+    private static void validateKeyRules(ProxyConfig.Namespace namespace) {
+        List<String> seen = new ArrayList<>();
+        for (ProxyConfig.KeyRule rule : namespace.getKeyRules()) {
+            if (rule.getName() == null || rule.getName().isBlank()) {
+                throw new IllegalArgumentException("governance namespace " + namespace.getName() + " keyRules.name is required");
+            }
+            if (seen.contains(rule.getName())) {
+                throw new IllegalArgumentException("governance namespace " + namespace.getName() + " has duplicate key rule: " + rule.getName());
+            }
+            seen.add(rule.getName());
+            boolean hasKeyPrefix = rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank();
+            boolean hasHashTag = rule.getHashTag() != null && !rule.getHashTag().isBlank();
+            if (!hasKeyPrefix && !hasHashTag) {
+                throw new IllegalArgumentException("governance namespace " + namespace.getName() + " key rule " + rule.getName() + " must set keyPrefix or hashTag");
+            }
+            if (rule.getMaxQps() < 0) {
+                throw new IllegalArgumentException("governance namespace " + namespace.getName() + " key rule " + rule.getName() + " maxQps must be >= 0");
+            }
         }
     }
 
@@ -272,10 +308,23 @@ public class ConfigService {
     private static String summarizeGovernance(ProxyConfig config) {
         return config.getGovernance().isEnabled()
                 + ":" + config.getGovernance().isRequireAuth()
+                + ":" + config.getGovernance().getKeyLimitWindowMillis()
+                + ":" + config.getGovernance().getKeyLimitBucketMillis()
                 + ":" + config.getGovernance().getCommandPolicy().getDeniedCommands()
                 + ":" + config.getGovernance().getCommandPolicy().getWarnOnlyCommands()
                 + ":" + config.getGovernance().getNamespaces().stream()
-                .map(namespace -> namespace.getName() + ":" + namespace.isReadOnly() + ":" + namespace.getAllowedKeyPrefixes() + ":" + namespace.getDeniedCommands() + ":" + namespace.getWarnOnlyCommands())
+                .map(namespace -> namespace.getName()
+                        + ":" + namespace.isReadOnly()
+                        + ":" + namespace.getAllowedKeyPrefixes()
+                        + ":" + namespace.getDeniedCommands()
+                        + ":" + namespace.getWarnOnlyCommands()
+                        + ":" + namespace.getLimits().getMaxConnections()
+                        + ":" + namespace.getLimits().getMaxQps()
+                        + ":" + namespace.getLimits().getMaxInflight()
+                        + ":" + namespace.getDisabledKeys()
+                        + ":" + namespace.getKeyRules().stream()
+                        .map(rule -> rule.getName() + ":" + rule.getKeyPrefix() + ":" + rule.getHashTag() + ":" + rule.isDisabled() + ":" + rule.getMaxQps())
+                        .toList())
                 .toList();
     }
 
@@ -344,6 +393,8 @@ public class ConfigService {
         ProxyConfig.Governance copy = new ProxyConfig.Governance();
         copy.setEnabled(source.isEnabled());
         copy.setRequireAuth(source.isRequireAuth());
+        copy.setKeyLimitWindowMillis(source.getKeyLimitWindowMillis());
+        copy.setKeyLimitBucketMillis(source.getKeyLimitBucketMillis());
         ProxyConfig.CommandPolicy commandPolicy = new ProxyConfig.CommandPolicy();
         commandPolicy.setDeniedCommands(List.copyOf(source.getCommandPolicy().getDeniedCommands()));
         commandPolicy.setWarnOnlyCommands(List.copyOf(source.getCommandPolicy().getWarnOnlyCommands()));
@@ -360,6 +411,23 @@ public class ConfigService {
         copy.setAllowedKeyPrefixes(List.copyOf(source.getAllowedKeyPrefixes()));
         copy.setDeniedCommands(List.copyOf(source.getDeniedCommands()));
         copy.setWarnOnlyCommands(List.copyOf(source.getWarnOnlyCommands()));
+        ProxyConfig.NamespaceLimits limits = new ProxyConfig.NamespaceLimits();
+        limits.setMaxConnections(source.getLimits().getMaxConnections());
+        limits.setMaxQps(source.getLimits().getMaxQps());
+        limits.setMaxInflight(source.getLimits().getMaxInflight());
+        copy.setLimits(limits);
+        copy.setDisabledKeys(List.copyOf(source.getDisabledKeys()));
+        copy.setKeyRules(source.getKeyRules().stream().map(ConfigService::copyKeyRule).toList());
+        return copy;
+    }
+
+    private static ProxyConfig.KeyRule copyKeyRule(ProxyConfig.KeyRule source) {
+        ProxyConfig.KeyRule copy = new ProxyConfig.KeyRule();
+        copy.setName(source.getName());
+        copy.setKeyPrefix(source.getKeyPrefix());
+        copy.setHashTag(source.getHashTag());
+        copy.setDisabled(source.isDisabled());
+        copy.setMaxQps(source.getMaxQps());
         return copy;
     }
 

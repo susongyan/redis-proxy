@@ -204,6 +204,15 @@ class ConfigServiceTest {
         namespace.setToken("token-a");
         namespace.setAllowedKeyPrefixes(List.of("app-a:"));
         namespace.setDeniedCommands(List.of("flushall"));
+        namespace.getLimits().setMaxConnections(10);
+        namespace.getLimits().setMaxQps(100);
+        namespace.getLimits().setMaxInflight(20);
+        namespace.setDisabledKeys(List.of("app-a:blocked"));
+        ProxyConfig.KeyRule rule = new ProxyConfig.KeyRule();
+        rule.setName("hot");
+        rule.setKeyPrefix("app-a:hot:");
+        rule.setMaxQps(1);
+        namespace.setKeyRules(List.of(rule));
         next.getGovernance().setNamespaces(List.of(namespace));
 
         ConfigVersion version = service.publish(publishRequest(next, "alice", "governance"));
@@ -212,7 +221,16 @@ class ConfigServiceTest {
         assertThat(version.config().getGovernance().getNamespaces()).hasSize(1);
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getDeniedCommands()).containsExactly("FLUSHALL");
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getToken()).isEqualTo("token-a");
+        assertThat(version.config().getGovernance().getNamespaces().getFirst().getLimits().getMaxQps()).isEqualTo(100);
+        assertThat(version.config().getGovernance().getNamespaces().getFirst().getDisabledKeys()).containsExactly("app-a:blocked");
+        assertThat(version.config().getGovernance().getNamespaces().getFirst().getKeyRules().getFirst().getName()).isEqualTo("hot");
         assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("governance"));
+
+        RollbackRequest rollback = new RollbackRequest();
+        rollback.setVersionId(2L);
+        ConfigVersion rollbackVersion = service.rollback(rollback);
+        assertThat(rollbackVersion.config().getRouting().getRouteEpoch()).isEqualTo(3);
+        assertThat(rollbackVersion.config().getGovernance().getNamespaces().getFirst().getKeyRules().getFirst().getMaxQps()).isEqualTo(1);
     }
 
     @Test
@@ -238,6 +256,27 @@ class ConfigServiceTest {
         assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "duplicate governance")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("duplicate");
+
+        next.getGovernance().setKeyLimitWindowMillis(1000);
+        next.getGovernance().setKeyLimitBucketMillis(333);
+        next.getGovernance().setNamespaces(List.of(namespace));
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "bad window")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("window");
+
+        next.getGovernance().setKeyLimitBucketMillis(100);
+        namespace.getLimits().setMaxQps(-1);
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "bad namespace limit")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("limits");
+
+        namespace.getLimits().setMaxQps(0);
+        ProxyConfig.KeyRule badRule = new ProxyConfig.KeyRule();
+        badRule.setName("bad");
+        namespace.setKeyRules(List.of(badRule));
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "bad key rule")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("key rule");
     }
 
     private static PublishRequest publishRequest(ProxyConfig config, String operator, String reason) {

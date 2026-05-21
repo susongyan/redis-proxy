@@ -39,12 +39,40 @@ for i in {1..60}; do
   kill -0 "${CP_PID}" >/dev/null 2>&1 || { tail -120 "${LOG_DIR}/control-plane.log"; exit 1; }
 done
 
-cat >"${LOG_DIR}/config-epoch1.json" <<'JSON'
-{"server":{"listen":"0.0.0.0:6379"},"admin":{"listen":"0.0.0.0:8080"},"mode":"standalone","backends":{"clusters":[{"name":"redis-a","nodes":["127.0.0.1:63810"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}}]},"routing":{"defaultCluster":"redis-a","routeEpoch":1,"clusterSlotsRefreshIntervalSeconds":30,"rules":[]},"limits":{"maxPipelineDepth":1024,"maxRequestBytes":10485760,"maxResponseBytes":104857600},"governance":{"enabled":true,"requireAuth":true,"commandPolicy":{"deniedCommands":["FLUSHALL","FLUSHDB","CONFIG","SHUTDOWN","DEBUG","MODULE"],"warnOnlyCommands":["KEYS","EVAL","SCRIPT"]},"namespaces":[{"name":"app-a","token":"token-a","readOnly":false,"allowedKeyPrefixes":["app-a:"],"deniedCommands":[],"warnOnlyCommands":[]},{"name":"reader","token":"token-r","readOnly":true,"allowedKeyPrefixes":["reader:"],"deniedCommands":[],"warnOnlyCommands":[]}]}}
-JSON
-cat >"${LOG_DIR}/publish-epoch2.json" <<'JSON'
-{"operator":"e2e","reason":"governance dynamic switch","config":{"server":{"listen":"0.0.0.0:6379"},"admin":{"listen":"0.0.0.0:8080"},"mode":"standalone","backends":{"clusters":[{"name":"redis-a","nodes":["127.0.0.1:63810"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}}]},"routing":{"defaultCluster":"redis-a","routeEpoch":2,"clusterSlotsRefreshIntervalSeconds":30,"rules":[]},"limits":{"maxPipelineDepth":1024,"maxRequestBytes":10485760,"maxResponseBytes":104857600},"governance":{"enabled":true,"requireAuth":true,"commandPolicy":{"deniedCommands":["FLUSHALL","FLUSHDB","CONFIG","SHUTDOWN","DEBUG","MODULE"],"warnOnlyCommands":["KEYS","EVAL","SCRIPT"]},"namespaces":[{"name":"app-a","token":"token-a","readOnly":false,"allowedKeyPrefixes":["app-b:"],"deniedCommands":[],"warnOnlyCommands":[]},{"name":"reader","token":"token-r","readOnly":true,"allowedKeyPrefixes":["reader:"],"deniedCommands":[],"warnOnlyCommands":[]}]}}}
-JSON
+python3 - <<'PY' >"${LOG_DIR}/config-epoch1.json"
+import json
+base = {
+  "server": {"listen": "0.0.0.0:6379"},
+  "admin": {"listen": "0.0.0.0:8080"},
+  "mode": "standalone",
+  "backends": {"clusters": [{"name": "redis-a", "nodes": ["127.0.0.1:63810"], "pool": {"connectionsPerNode": 2, "maxInflightPerConnection": 128}}]},
+  "routing": {"defaultCluster": "redis-a", "routeEpoch": 1, "clusterSlotsRefreshIntervalSeconds": 30, "rules": []},
+  "limits": {"maxPipelineDepth": 1024, "maxRequestBytes": 10485760, "maxResponseBytes": 104857600},
+  "governance": {
+    "enabled": True,
+    "requireAuth": True,
+    "keyLimitWindowMillis": 1000,
+    "keyLimitBucketMillis": 100,
+    "commandPolicy": {"deniedCommands": ["FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"], "warnOnlyCommands": ["KEYS", "EVAL", "SCRIPT"]},
+    "namespaces": [
+      {"name": "app-a", "token": "token-a", "readOnly": False, "allowedKeyPrefixes": ["app-a:"], "limits": {"maxConnections": 0, "maxQps": 0, "maxInflight": 0}, "disabledKeys": ["app-a:blocked"], "keyRules": [{"name": "hot", "keyPrefix": "app-a:hot:", "maxQps": 1}]},
+      {"name": "reader", "token": "token-r", "readOnly": True, "allowedKeyPrefixes": ["reader:"]},
+      {"name": "limited", "token": "token-l", "readOnly": False, "allowedKeyPrefixes": ["limited:"], "limits": {"maxConnections": 0, "maxQps": 1, "maxInflight": 0}}
+    ]
+  }
+}
+print(json.dumps(base))
+PY
+LOG_PATH="${LOG_DIR}" python3 - <<'PY' >"${LOG_DIR}/publish-epoch2.json"
+import json
+import os
+base = json.load(open(os.path.join(os.environ["LOG_PATH"], "config-epoch1.json")))
+base["routing"]["routeEpoch"] = 2
+base["governance"]["namespaces"][0]["allowedKeyPrefixes"] = ["app-b:"]
+base["governance"]["namespaces"][0]["disabledKeys"] = []
+base["governance"]["namespaces"][0]["keyRules"] = []
+print(json.dumps({"operator": "e2e", "reason": "governance dynamic switch", "config": base}))
+PY
 
 curl -fsS -X PUT -H 'Content-Type: application/json' --data-binary @"${LOG_DIR}/config-epoch1.json" http://127.0.0.1:8090/api/v1/config >/dev/null
 
@@ -73,10 +101,18 @@ governance:
     - name: "app-a"
       token: "token-a"
       allowedKeyPrefixes: ["app-a:"]
+      limits: {maxConnections: 0, maxQps: 0, maxInflight: 0}
+      disabledKeys: ["app-a:blocked"]
+      keyRules:
+        - {name: "hot", keyPrefix: "app-a:hot:", maxQps: 1}
     - name: "reader"
       token: "token-r"
       readOnly: true
       allowedKeyPrefixes: ["reader:"]
+    - name: "limited"
+      token: "token-l"
+      allowedKeyPrefixes: ["limited:"]
+      limits: {maxConnections: 0, maxQps: 1, maxInflight: 0}
 YAML
   (cd "${ROOT}/redis-proxy-dataplane-go" && go run ./cmd/proxy -config "${LOG_DIR}/proxy.yaml" >"${LOG_DIR}/proxy.log" 2>&1) &
 else
@@ -110,10 +146,18 @@ proxy:
       - name: "app-a"
         token: "token-a"
         allowedKeyPrefixes: ["app-a:"]
+        limits: {maxConnections: 0, maxQps: 0, maxInflight: 0}
+        disabledKeys: ["app-a:blocked"]
+        keyRules:
+          - {name: "hot", keyPrefix: "app-a:hot:", maxQps: 1}
       - name: "reader"
         token: "token-r"
         readOnly: true
         allowedKeyPrefixes: ["reader:"]
+      - name: "limited"
+        token: "token-l"
+        allowedKeyPrefixes: ["limited:"]
+        limits: {maxConnections: 0, maxQps: 1, maxInflight: 0}
 YAML
   (cd "${ROOT}/redis-proxy-dataplane-java" && mvn -Dmaven.repo.local=/tmp/redis-proxy-m2 spring-boot:run -Dspring-boot.run.arguments=--spring.config.location="${LOG_DIR}/proxy.yml" >"${LOG_DIR}/proxy.log" 2>&1) &
 fi
@@ -160,6 +204,9 @@ assert_contains("unauth", exchange(cmd("GET", "app-a:1")), b"-NOAUTH Authenticat
 assert_contains("auth-set-get", exchange(cmd("AUTH", "app-a", "token-a") + cmd("SET", "app-a:1", "v1") + cmd("GET", "app-a:1")), b"$2\r\nv1\r\n")
 assert_contains("flush denied", exchange(cmd("AUTH", "app-a", "token-a") + cmd("FLUSHALL")), b"-ERR command denied by proxy governance")
 assert_contains("key prefix denied", exchange(cmd("AUTH", "app-a", "token-a") + cmd("GET", "other:1")), b"-ERR key denied by proxy governance")
+assert_contains("exact key disabled", exchange(cmd("AUTH", "app-a", "token-a") + cmd("GET", "app-a:blocked")), b"-ERR key disabled by proxy governance")
+assert_contains("key sliding limit", exchange(cmd("AUTH", "app-a", "token-a") + cmd("GET", "app-a:hot:1") + cmd("GET", "app-a:hot:2")), b"-ERR key limited by proxy governance")
+assert_contains("namespace qps limit", exchange(cmd("AUTH", "limited", "token-l") + cmd("GET", "limited:1") + cmd("GET", "limited:2")), b"-ERR request limited by proxy governance")
 assert_contains("reader get", exchange(cmd("AUTH", "reader", "token-r") + cmd("GET", "reader:seed")), b"$6\r\nseeded\r\n")
 assert_contains("reader set denied", exchange(cmd("AUTH", "reader", "token-r") + cmd("SET", "reader:1", "v")), b"-ERR command denied by proxy governance")
 PY

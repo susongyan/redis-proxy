@@ -186,6 +186,8 @@ controlPlane:
 governance:
   enabled: false
   requireAuth: true
+  keyLimitWindowMillis: 1000
+  keyLimitBucketMillis: 100
   commandPolicy:
     deniedCommands: ["FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"]
     warnOnlyCommands: ["KEYS", "EVAL", "SCRIPT"]
@@ -196,6 +198,16 @@ governance:
       allowedKeyPrefixes: ["app-a:"]
       deniedCommands: []
       warnOnlyCommands: []
+      limits:
+        maxConnections: 0
+        maxQps: 0
+        maxInflight: 0
+      disabledKeys: ["app-a:blocked"]
+      keyRules:
+        - name: "hot-user"
+          keyPrefix: "app-a:hot:"
+          disabled: false
+          maxQps: 1000
 ```
 
 配置原则：
@@ -209,6 +221,9 @@ governance:
 - `controlPlane.watchTimeoutSeconds` 表示单次 watch 的服务端等待窗口；`requestTimeoutMillis` 是客户端请求超时余量。
 - `governance.enabled=false` 时数据面保持透明代理；开启后，`AUTH <namespace> <token>` 由 proxy 本地处理并绑定连接身份，不转发给 Redis。
 - `governance.requireAuth=true` 时，除 `AUTH` / `QUIT` 外的未认证请求返回 `-NOAUTH Authentication required`。
+- namespace 维度支持连接数、秒级 QPS 和 inflight 限制；`0` 表示不限制。
+- key 维度支持精确禁用 `disabledKeys` 和按 `keyPrefix` / `hashTag` 匹配的 `keyRules`；`maxQps` 使用本地滑动窗口计数，默认 `1000ms / 100ms`。
+- 启用 key 治理时，多 key 命令任意 key 命中禁用或限流都会拒绝整个请求；无法识别 key 位置的命令 fail closed。
 - namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
 - 所有切换和治理规则必须可审计、可回滚。
 
@@ -466,7 +481,7 @@ Slot cache 刷新策略：
 
 第三阶段：治理能力
 
-状态：第一批治理 MVP 已完成，限流和访问特征分析待进入后续批次。
+状态：第一批治理 MVP 已完成，namespace / key 级本地治理限流已进入实现收敛；访问特征分析待进入后续批次。
 
 已完成：
 
@@ -476,10 +491,12 @@ Slot cache 刷新策略：
 4. 支持 namespace 可选 `allowedKeyPrefixes`，对未知 key 位置命令 fail closed。
 5. 控制面 `ProxyConfig`、publish、rollback、diff 和 status 支持 governance 配置。
 6. 治理规则随 route snapshot 长轮询动态生效，Go / Java 均有 `e2e-governance.sh` 覆盖。
+7. 支持 namespace 维度连接数、QPS、inflight 限制。
+8. 支持 key 精确禁用、keyPrefix/hashTag 规则禁用，以及基于滑动窗口的 key rule QPS 限流。
 
 待完成：
 
-1. 基于连接、QPS、pipeline、inflight、请求/响应大小的限流。
+1. pipeline、请求大小、响应大小治理与 namespace/key 限流指标联动。
 2. 热 key 采样 TopK 和大 response 阈值告警。
 3. 治理审计持久化、token 加密存储和密钥管理接入。
 

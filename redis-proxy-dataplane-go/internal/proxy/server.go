@@ -22,16 +22,18 @@ import (
 )
 
 type Server struct {
-	cfg      *config.Config
-	router   *router.Manager
-	backends *backend.Pools
-	metrics  *metrics.Registry
-	log      *zap.Logger
-	ln       net.Listener
-	done     chan struct{}
-	wg       sync.WaitGroup
-	clientID atomic.Uint64
-	onMoved  func()
+	cfg       *config.Config
+	router    *router.Manager
+	backends  *backend.Pools
+	metrics   *metrics.Registry
+	log       *zap.Logger
+	ln        net.Listener
+	done      chan struct{}
+	wg        sync.WaitGroup
+	clientID  atomic.Uint64
+	onMoved   func()
+	nsLimiter *namespaceLimiter
+	keyGov    *keyGovernanceLimiter
 }
 
 type completion struct {
@@ -43,7 +45,7 @@ type completion struct {
 }
 
 func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func()) *Server {
-	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved}
+	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter()}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -101,6 +103,7 @@ func (s *Server) handle(conn net.Conn) {
 	}
 
 	var pending atomic.Int64
+	namespace := ""
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -110,6 +113,7 @@ func (s *Server) handle(conn net.Conn) {
 	finish := func() {
 		closeClient()
 		<-writerDone
+		s.nsLimiter.unbind(namespace)
 		for remaining := pending.Swap(0); remaining > 0; remaining-- {
 			s.metrics.ClientPending.Dec()
 		}
@@ -117,7 +121,6 @@ func (s *Server) handle(conn net.Conn) {
 
 	br := bufio.NewReader(conn)
 	var seq uint64
-	namespace := ""
 	affinity := s.clientID.Add(1)
 	for {
 		select {
@@ -158,6 +161,13 @@ func (s *Server) handle(conn net.Conn) {
 			auth := governance.Authenticate(govCfg, req)
 			s.metrics.Auth.WithLabelValues(auth.Namespace, auth.Result).Inc()
 			if auth.Allowed {
+				next, _ := governance.Namespace(govCfg, auth.Namespace)
+				if ok, reason := s.nsLimiter.bind(namespace, next); !ok {
+					s.metrics.Auth.WithLabelValues(auth.Namespace, reason).Inc()
+					s.metrics.GovernanceRejects.WithLabelValues(auth.Namespace, cmd, reason).Inc()
+					s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: []byte("-ERR namespace connection limit exceeded\r\n"), start: start})
+					continue
+				}
 				namespace = auth.Namespace
 			}
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: auth.Response, start: start})
@@ -172,9 +182,24 @@ func (s *Server) handle(conn net.Conn) {
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: govDecision.Response, start: start})
 			continue
 		}
+		namespaceCfg, _ := governance.Namespace(govCfg, namespace)
+		if ok, reason := s.nsLimiter.allowRequest(namespaceCfg); !ok {
+			s.metrics.GovernanceRejects.WithLabelValues(namespace, cmd, reason).Inc()
+			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: []byte("-ERR request limited by proxy governance\r\n"), start: start})
+			continue
+		}
+		keyDecision := s.keyGov.evaluate(govCfg, namespaceCfg, req)
+		if !keyDecision.Allowed {
+			s.nsLimiter.finishRequest(namespace)
+			s.metrics.KeyGovernanceRejects.WithLabelValues(namespace, keyDecision.Rule, cmd, keyDecision.Reason).Inc()
+			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: keyDecision.Response, start: start})
+			continue
+		}
+		requestNamespace := namespace
 
 		decision, err := s.router.RouteDecision(req)
 		if err != nil {
+			s.nsLimiter.finishRequest(requestNamespace)
 			s.metrics.Errors.WithLabelValues("route").Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start})
 			continue
@@ -182,9 +207,11 @@ func (s *Server) handle(conn net.Conn) {
 		s.metrics.RouteDecisions.WithLabelValues(decision.Cluster, decision.Rule).Inc()
 
 		err = s.backends.DoAsyncAffinity(decision.Addr, affinity, req.Raw, func(result backend.Result) {
+			s.nsLimiter.finishRequest(requestNamespace)
 			s.completeBackendResult(completions, clientDone, current, cmd, start, decision, affinity, req.Raw, result, false)
 		})
 		if err != nil {
+			s.nsLimiter.finishRequest(requestNamespace)
 			s.metrics.Errors.WithLabelValues("backend").Inc()
 			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start})
 		}

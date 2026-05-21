@@ -73,10 +73,12 @@ type ControlPlaneConfig struct {
 }
 
 type GovernanceConfig struct {
-	Enabled       bool                `yaml:"enabled" json:"enabled"`
-	RequireAuth   bool                `yaml:"requireAuth" json:"requireAuth"`
-	CommandPolicy CommandPolicyConfig `yaml:"commandPolicy" json:"commandPolicy"`
-	Namespaces    []NamespaceConfig   `yaml:"namespaces" json:"namespaces"`
+	Enabled              bool                `yaml:"enabled" json:"enabled"`
+	RequireAuth          bool                `yaml:"requireAuth" json:"requireAuth"`
+	KeyLimitWindowMillis int                 `yaml:"keyLimitWindowMillis" json:"keyLimitWindowMillis"`
+	KeyLimitBucketMillis int                 `yaml:"keyLimitBucketMillis" json:"keyLimitBucketMillis"`
+	CommandPolicy        CommandPolicyConfig `yaml:"commandPolicy" json:"commandPolicy"`
+	Namespaces           []NamespaceConfig   `yaml:"namespaces" json:"namespaces"`
 }
 
 type CommandPolicyConfig struct {
@@ -85,12 +87,29 @@ type CommandPolicyConfig struct {
 }
 
 type NamespaceConfig struct {
-	Name               string   `yaml:"name" json:"name"`
-	Token              string   `yaml:"token" json:"token"`
-	ReadOnly           bool     `yaml:"readOnly" json:"readOnly"`
-	AllowedKeyPrefixes []string `yaml:"allowedKeyPrefixes" json:"allowedKeyPrefixes"`
-	DeniedCommands     []string `yaml:"deniedCommands" json:"deniedCommands"`
-	WarnOnlyCommands   []string `yaml:"warnOnlyCommands" json:"warnOnlyCommands"`
+	Name               string                `yaml:"name" json:"name"`
+	Token              string                `yaml:"token" json:"token"`
+	ReadOnly           bool                  `yaml:"readOnly" json:"readOnly"`
+	AllowedKeyPrefixes []string              `yaml:"allowedKeyPrefixes" json:"allowedKeyPrefixes"`
+	DeniedCommands     []string              `yaml:"deniedCommands" json:"deniedCommands"`
+	WarnOnlyCommands   []string              `yaml:"warnOnlyCommands" json:"warnOnlyCommands"`
+	Limits             NamespaceLimitsConfig `yaml:"limits" json:"limits"`
+	DisabledKeys       []string              `yaml:"disabledKeys" json:"disabledKeys"`
+	KeyRules           []KeyRuleConfig       `yaml:"keyRules" json:"keyRules"`
+}
+
+type NamespaceLimitsConfig struct {
+	MaxConnections int `yaml:"maxConnections" json:"maxConnections"`
+	MaxQPS         int `yaml:"maxQps" json:"maxQps"`
+	MaxInflight    int `yaml:"maxInflight" json:"maxInflight"`
+}
+
+type KeyRuleConfig struct {
+	Name      string `yaml:"name" json:"name"`
+	KeyPrefix string `yaml:"keyPrefix" json:"keyPrefix"`
+	HashTag   string `yaml:"hashTag" json:"hashTag"`
+	Disabled  bool   `yaml:"disabled" json:"disabled"`
+	MaxQPS    int    `yaml:"maxQps" json:"maxQps"`
 }
 
 func Load(path string) (*Config, error) {
@@ -140,6 +159,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Governance.Enabled && !cfg.Governance.RequireAuth {
 		cfg.Governance.RequireAuth = true
+	}
+	if cfg.Governance.KeyLimitWindowMillis == 0 {
+		cfg.Governance.KeyLimitWindowMillis = 1000
+	}
+	if cfg.Governance.KeyLimitBucketMillis == 0 {
+		cfg.Governance.KeyLimitBucketMillis = 100
 	}
 	if len(cfg.Governance.CommandPolicy.DeniedCommands) == 0 {
 		cfg.Governance.CommandPolicy.DeniedCommands = []string{"FLUSHALL", "FLUSHDB", "CONFIG", "SHUTDOWN", "DEBUG", "MODULE"}
@@ -223,6 +248,12 @@ func (c *Config) Validate() error {
 }
 
 func (c *Config) validateGovernance() error {
+	if c.Governance.KeyLimitWindowMillis == 0 {
+		c.Governance.KeyLimitWindowMillis = 1000
+	}
+	if c.Governance.KeyLimitBucketMillis == 0 {
+		c.Governance.KeyLimitBucketMillis = 100
+	}
 	seen := map[string]bool{}
 	for _, namespace := range c.Governance.Namespaces {
 		if namespace.Name == "" {
@@ -235,11 +266,36 @@ func (c *Config) validateGovernance() error {
 			return fmt.Errorf("duplicate governance namespace %q", namespace.Name)
 		}
 		seen[namespace.Name] = true
+		if namespace.Limits.MaxConnections < 0 || namespace.Limits.MaxQPS < 0 || namespace.Limits.MaxInflight < 0 {
+			return fmt.Errorf("governance namespace %q limits must be >= 0", namespace.Name)
+		}
 		for _, command := range append(append([]string{}, namespace.DeniedCommands...), namespace.WarnOnlyCommands...) {
 			if !validCommand(command) {
 				return fmt.Errorf("governance namespace %q has invalid command %q", namespace.Name, command)
 			}
 		}
+		ruleNames := map[string]bool{}
+		for _, rule := range namespace.KeyRules {
+			if rule.Name == "" {
+				return fmt.Errorf("governance namespace %q keyRules.name is required", namespace.Name)
+			}
+			if ruleNames[rule.Name] {
+				return fmt.Errorf("governance namespace %q has duplicate key rule %q", namespace.Name, rule.Name)
+			}
+			ruleNames[rule.Name] = true
+			if rule.KeyPrefix == "" && rule.HashTag == "" {
+				return fmt.Errorf("governance namespace %q key rule %q must set keyPrefix or hashTag", namespace.Name, rule.Name)
+			}
+			if rule.MaxQPS < 0 {
+				return fmt.Errorf("governance namespace %q key rule %q maxQps must be >= 0", namespace.Name, rule.Name)
+			}
+		}
+	}
+	if c.Governance.KeyLimitWindowMillis <= 0 || c.Governance.KeyLimitBucketMillis <= 0 {
+		return errors.New("governance key limit window and bucket must be > 0")
+	}
+	if c.Governance.KeyLimitWindowMillis%c.Governance.KeyLimitBucketMillis != 0 {
+		return errors.New("governance keyLimitWindowMillis must be divisible by keyLimitBucketMillis")
 	}
 	for _, command := range append(append([]string{}, c.Governance.CommandPolicy.DeniedCommands...), c.Governance.CommandPolicy.WarnOnlyCommands...) {
 		if !validCommand(command) {
