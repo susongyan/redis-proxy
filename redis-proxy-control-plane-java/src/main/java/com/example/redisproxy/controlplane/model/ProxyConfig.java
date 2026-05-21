@@ -114,12 +114,15 @@ public class ProxyConfig {
         @Positive private int maxPipelineDepth = 1024;
         @Positive private int maxRequestBytes = 10 * 1024 * 1024;
         @Positive private int maxResponseBytes = 100 * 1024 * 1024;
+        private int largeResponseBytes = 1024 * 1024;
         public int getMaxPipelineDepth() { return maxPipelineDepth; }
         public void setMaxPipelineDepth(int maxPipelineDepth) { this.maxPipelineDepth = maxPipelineDepth; }
         public int getMaxRequestBytes() { return maxRequestBytes; }
         public void setMaxRequestBytes(int maxRequestBytes) { this.maxRequestBytes = maxRequestBytes; }
         public int getMaxResponseBytes() { return maxResponseBytes; }
         public void setMaxResponseBytes(int maxResponseBytes) { this.maxResponseBytes = maxResponseBytes; }
+        public int getLargeResponseBytes() { return largeResponseBytes; }
+        public void setLargeResponseBytes(int largeResponseBytes) { this.largeResponseBytes = largeResponseBytes; }
     }
 
     public static class Governance {

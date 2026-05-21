@@ -37,6 +37,7 @@ func main() {
 	}
 
 	reg := metrics.NewRegistry()
+	reg.LargeResponseThreshold.Set(float64(cfg.Limits.LargeResponseBytes))
 	hotKeys := analysis.NewHotKeyTracker(reg)
 	manager, err := router.NewManager(cfg)
 	if err != nil {

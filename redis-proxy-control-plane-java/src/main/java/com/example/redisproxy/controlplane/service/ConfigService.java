@@ -98,6 +98,7 @@ public class ConfigService {
         addChange(changes, "limits.maxPipelineDepth", a.getLimits().getMaxPipelineDepth(), b.getLimits().getMaxPipelineDepth());
         addChange(changes, "limits.maxRequestBytes", a.getLimits().getMaxRequestBytes(), b.getLimits().getMaxRequestBytes());
         addChange(changes, "limits.maxResponseBytes", a.getLimits().getMaxResponseBytes(), b.getLimits().getMaxResponseBytes());
+        addChange(changes, "limits.largeResponseBytes", a.getLimits().getLargeResponseBytes(), b.getLimits().getLargeResponseBytes());
         addChange(changes, "governance", summarizeGovernance(a), summarizeGovernance(b));
         return new ConfigDiff(fromVersionId, toVersionId, changes);
     }
@@ -186,6 +187,12 @@ public class ConfigService {
         }
         if (config.getRouting().getClusterSlotsRefreshIntervalSeconds() < 0) {
             throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
+        }
+        if (config.getLimits().getMaxPipelineDepth() <= 0
+                || config.getLimits().getMaxRequestBytes() <= 0
+                || config.getLimits().getMaxResponseBytes() <= 0
+                || config.getLimits().getLargeResponseBytes() < 0) {
+            throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
         }
         for (ProxyConfig.RouteRule rule : config.getRouting().getRules()) {
             if (!clusterNames.contains(rule.getCluster())) {
@@ -364,6 +371,7 @@ public class ConfigService {
         copy.getLimits().setMaxPipelineDepth(source.getLimits().getMaxPipelineDepth());
         copy.getLimits().setMaxRequestBytes(source.getLimits().getMaxRequestBytes());
         copy.getLimits().setMaxResponseBytes(source.getLimits().getMaxResponseBytes());
+        copy.getLimits().setLargeResponseBytes(source.getLimits().getLargeResponseBytes());
         copy.setGovernance(copyGovernance(source.getGovernance()));
         return copy;
     }

@@ -9,6 +9,9 @@ type Registry struct {
 	Requests               *prometheus.CounterVec
 	Errors                 *prometheus.CounterVec
 	Latency                *prometheus.HistogramVec
+	ResponseBytes          *prometheus.HistogramVec
+	LargeResponses         *prometheus.CounterVec
+	LargeResponseThreshold prometheus.Gauge
 	BackendLatency         *prometheus.HistogramVec
 	ActiveConns            prometheus.Gauge
 	BackendConns           prometheus.Gauge
@@ -53,6 +56,9 @@ func NewRegistry() *Registry {
 	r.Requests = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_requests_total", Help: "Total proxied requests"}, []string{"command"})
 	r.Errors = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_errors_total", Help: "Total proxy errors"}, []string{"type"})
 	r.Latency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "redis_proxy_request_latency_seconds", Help: "Proxy request latency", Buckets: prometheus.DefBuckets}, []string{"command"})
+	r.ResponseBytes = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "redis_proxy_response_bytes", Help: "Final response frame bytes by command", Buckets: []float64{64, 256, 1024, 4096, 16 * 1024, 64 * 1024, 256 * 1024, 1024 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024, 64 * 1024 * 1024}}, []string{"command"})
+	r.LargeResponses = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_large_response_total", Help: "Responses whose frame size exceeds configured large response threshold"}, []string{"command"})
+	r.LargeResponseThreshold = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_response_threshold_bytes", Help: "Configured large response soft threshold in bytes"})
 	r.BackendLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "redis_proxy_backend_latency_seconds", Help: "Backend request latency", Buckets: prometheus.DefBuckets}, []string{"backend"})
 	r.ActiveConns = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_active_connections", Help: "Active client connections"})
 	r.BackendConns = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_backend_active_connections", Help: "Active backend connections"})
@@ -96,6 +102,9 @@ func NewRegistry() *Registry {
 		r.Requests,
 		r.Errors,
 		r.Latency,
+		r.ResponseBytes,
+		r.LargeResponses,
+		r.LargeResponseThreshold,
 		r.BackendLatency,
 		r.ActiveConns,
 		r.BackendConns,

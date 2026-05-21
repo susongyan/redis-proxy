@@ -311,12 +311,21 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 	if bytes.HasPrefix(item.response, []byte("-ASK ")) {
 		s.metrics.Ask.Inc()
 	}
+	s.observeResponseSize(item.command, len(item.response))
 	if _, err := conn.Write(item.response); err != nil {
 		s.metrics.Errors.WithLabelValues("client_write").Inc()
 		return false
 	}
 	s.metrics.Latency.WithLabelValues(strings.ToUpper(item.command)).Observe(time.Since(item.start).Seconds())
 	return true
+}
+
+func (s *Server) observeResponseSize(command string, size int) {
+	normalized := strings.ToUpper(command)
+	s.metrics.ResponseBytes.WithLabelValues(normalized).Observe(float64(size))
+	if s.cfg.Limits.LargeResponseBytes > 0 && size >= s.cfg.Limits.LargeResponseBytes {
+		s.metrics.LargeResponses.WithLabelValues(normalized).Inc()
+	}
 }
 
 func (s *Server) enqueueCompletion(ch chan<- completion, done <-chan struct{}, item completion) {

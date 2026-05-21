@@ -59,9 +59,10 @@ type RouteRuleConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxPipelineDepth int `yaml:"maxPipelineDepth" json:"maxPipelineDepth"`
-	MaxRequestBytes  int `yaml:"maxRequestBytes" json:"maxRequestBytes"`
-	MaxResponseBytes int `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+	MaxPipelineDepth   int `yaml:"maxPipelineDepth" json:"maxPipelineDepth"`
+	MaxRequestBytes    int `yaml:"maxRequestBytes" json:"maxRequestBytes"`
+	MaxResponseBytes   int `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+	LargeResponseBytes int `yaml:"largeResponseBytes" json:"largeResponseBytes"`
 }
 
 type ControlPlaneConfig struct {
@@ -148,6 +149,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Limits.MaxResponseBytes == 0 {
 		cfg.Limits.MaxResponseBytes = 100 * 1024 * 1024
 	}
+	if cfg.Limits.LargeResponseBytes == 0 {
+		cfg.Limits.LargeResponseBytes = 1024 * 1024
+	}
 	if cfg.ControlPlane.PollIntervalSeconds == 0 {
 		cfg.ControlPlane.PollIntervalSeconds = 5
 	}
@@ -207,6 +211,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ControlPlane.RequestTimeoutMillis < 0 {
 		return errors.New("controlPlane.requestTimeoutMillis must be >= 0")
+	}
+	if c.Limits.MaxPipelineDepth <= 0 || c.Limits.MaxRequestBytes <= 0 || c.Limits.MaxResponseBytes <= 0 || c.Limits.LargeResponseBytes < 0 {
+		return errors.New("limits must be positive and largeResponseBytes must be >= 0")
 	}
 	if len(c.Backends.Clusters) == 0 {
 		return errors.New("at least one backend cluster is required")

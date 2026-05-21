@@ -58,6 +58,7 @@ public class NettyProxyServer {
         workerGroup = new NioEventLoopGroup(properties.getServer().getWorkerThreads() > 0 ? properties.getServer().getWorkerThreads() : 0);
         registry.gauge("redis.proxy.active.connections", activeConnections);
         registry.gauge("redis.proxy.client.pending.responses", pendingClientResponses);
+        registry.gauge("redis.proxy.large.response.threshold.bytes", properties.getLimits(), limits -> (double) limits.getLargeResponseBytes());
         ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
@@ -66,7 +67,7 @@ public class NettyProxyServer {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new RespRequestDecoder(properties.getLimits().getMaxRequestBytes()));
-                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, hotKeyTracker, registry, activeConnections, pendingClientResponses));
+                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, properties, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, hotKeyTracker, registry, activeConnections, pendingClientResponses));
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress(listen.host(), listen.port())).sync().channel();

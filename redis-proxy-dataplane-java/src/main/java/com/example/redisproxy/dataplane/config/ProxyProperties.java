@@ -31,6 +31,9 @@ public class ProxyProperties {
         if (routing.routeEpoch < 0) {
             throw new IllegalArgumentException("routing.routeEpoch must be >= 0");
         }
+        if (limits.maxPipelineDepth <= 0 || limits.maxRequestBytes <= 0 || limits.maxResponseBytes <= 0 || limits.largeResponseBytes < 0) {
+            throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
+        }
         if (controlPlane.enabled && (controlPlane.url == null || controlPlane.url.isBlank())) {
             throw new IllegalArgumentException("controlPlane.url is required when controlPlane.enabled=true");
         }
@@ -190,12 +193,15 @@ public class ProxyProperties {
         private int maxPipelineDepth = 1024;
         private int maxRequestBytes = 10 * 1024 * 1024;
         private int maxResponseBytes = 100 * 1024 * 1024;
+        private int largeResponseBytes = 1024 * 1024;
         public int getMaxPipelineDepth() { return maxPipelineDepth; }
         public void setMaxPipelineDepth(int maxPipelineDepth) { this.maxPipelineDepth = maxPipelineDepth; }
         public int getMaxRequestBytes() { return maxRequestBytes; }
         public void setMaxRequestBytes(int maxRequestBytes) { this.maxRequestBytes = maxRequestBytes; }
         public int getMaxResponseBytes() { return maxResponseBytes; }
         public void setMaxResponseBytes(int maxResponseBytes) { this.maxResponseBytes = maxResponseBytes; }
+        public int getLargeResponseBytes() { return largeResponseBytes; }
+        public void setLargeResponseBytes(int largeResponseBytes) { this.largeResponseBytes = largeResponseBytes; }
     }
 
     public static class Governance {

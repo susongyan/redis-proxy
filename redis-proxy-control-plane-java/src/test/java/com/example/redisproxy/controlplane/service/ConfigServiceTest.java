@@ -199,6 +199,7 @@ class ConfigServiceTest {
         ProxyConfig next = service.get();
         next.getRouting().setRouteEpoch(2);
         next.getGovernance().setEnabled(true);
+        next.getLimits().setLargeResponseBytes(4096);
         ProxyConfig.Namespace namespace = new ProxyConfig.Namespace();
         namespace.setName("app-a");
         namespace.setToken("token-a");
@@ -222,6 +223,7 @@ class ConfigServiceTest {
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getDeniedCommands()).containsExactly("FLUSHALL");
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getToken()).isEqualTo("token-a");
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getLimits().getMaxQps()).isEqualTo(100);
+        assertThat(version.config().getLimits().getLargeResponseBytes()).isEqualTo(4096);
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getDisabledKeys()).containsExactly("app-a:blocked");
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getKeyRules().getFirst().getName()).isEqualTo("hot");
         assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("governance"));
@@ -230,6 +232,7 @@ class ConfigServiceTest {
         rollback.setVersionId(2L);
         ConfigVersion rollbackVersion = service.rollback(rollback);
         assertThat(rollbackVersion.config().getRouting().getRouteEpoch()).isEqualTo(3);
+        assertThat(rollbackVersion.config().getLimits().getLargeResponseBytes()).isEqualTo(4096);
         assertThat(rollbackVersion.config().getGovernance().getNamespaces().getFirst().getKeyRules().getFirst().getMaxQps()).isEqualTo(1);
     }
 
@@ -271,6 +274,12 @@ class ConfigServiceTest {
                 .hasMessageContaining("limits");
 
         namespace.getLimits().setMaxQps(0);
+        next.getLimits().setLargeResponseBytes(-1);
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "bad large response limit")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("limits");
+
+        next.getLimits().setLargeResponseBytes(0);
         ProxyConfig.KeyRule badRule = new ProxyConfig.KeyRule();
         badRule.setName("bad");
         namespace.setKeyRules(List.of(badRule));

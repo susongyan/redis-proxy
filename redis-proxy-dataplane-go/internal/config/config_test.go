@@ -8,6 +8,9 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 	if cfg.Routing.ClusterSlotsRefreshIntervalSeconds != 0 {
 		t.Fatalf("clusterSlotsRefreshIntervalSeconds=%d want 0", cfg.Routing.ClusterSlotsRefreshIntervalSeconds)
 	}
+	if cfg.Limits.LargeResponseBytes != 1024*1024 {
+		t.Fatalf("largeResponseBytes=%d want 1048576", cfg.Limits.LargeResponseBytes)
+	}
 }
 
 func TestValidateRejectsNegativeClusterSlotRefreshInterval(t *testing.T) {
@@ -81,5 +84,6 @@ func validConfig() Config {
 			Nodes: []string{"127.0.0.1:7000"},
 		}}},
 		Routing: RoutingConfig{DefaultCluster: "redis-a"},
+		Limits:  LimitsConfig{MaxPipelineDepth: 1024, MaxRequestBytes: 1024, MaxResponseBytes: 1024, LargeResponseBytes: 512},
 	}
 }
