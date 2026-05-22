@@ -67,7 +67,8 @@ type LimitsConfig struct {
 }
 
 type AnalysisConfig struct {
-	HotKey HotKeyAnalysisConfig `yaml:"hotKey" json:"hotKey"`
+	HotKey   HotKeyAnalysisConfig   `yaml:"hotKey" json:"hotKey"`
+	LargeKey LargeKeyAnalysisConfig `yaml:"largeKey" json:"largeKey"`
 }
 
 type HotKeyAnalysisConfig struct {
@@ -76,6 +77,16 @@ type HotKeyAnalysisConfig struct {
 	BucketMillis   int   `yaml:"bucketMillis" json:"bucketMillis"`
 	MaxTrackedKeys int   `yaml:"maxTrackedKeys" json:"maxTrackedKeys"`
 	MetricsTopN    int   `yaml:"metricsTopN" json:"metricsTopN"`
+}
+
+type LargeKeyAnalysisConfig struct {
+	Enabled                *bool `yaml:"enabled" json:"enabled"`
+	RequestBytesThreshold  int   `yaml:"requestBytesThreshold" json:"requestBytesThreshold"`
+	ResponseBytesThreshold int   `yaml:"responseBytesThreshold" json:"responseBytesThreshold"`
+	WindowSeconds          int   `yaml:"windowSeconds" json:"windowSeconds"`
+	BucketMillis           int   `yaml:"bucketMillis" json:"bucketMillis"`
+	MaxTrackedKeys         int   `yaml:"maxTrackedKeys" json:"maxTrackedKeys"`
+	DebugTopN              int   `yaml:"debugTopN" json:"debugTopN"`
 }
 
 type ControlPlaneConfig struct {
@@ -288,10 +299,36 @@ func applyAnalysisDefaults(analysis *AnalysisConfig) {
 	if analysis.HotKey.MetricsTopN == 0 {
 		analysis.HotKey.MetricsTopN = 20
 	}
+	if analysis.LargeKey.Enabled == nil {
+		enabled := true
+		analysis.LargeKey.Enabled = &enabled
+	}
+	if analysis.LargeKey.RequestBytesThreshold == 0 {
+		analysis.LargeKey.RequestBytesThreshold = 1024 * 1024
+	}
+	if analysis.LargeKey.ResponseBytesThreshold == 0 {
+		analysis.LargeKey.ResponseBytesThreshold = 1024 * 1024
+	}
+	if analysis.LargeKey.WindowSeconds == 0 {
+		analysis.LargeKey.WindowSeconds = 300
+	}
+	if analysis.LargeKey.BucketMillis == 0 {
+		analysis.LargeKey.BucketMillis = 1000
+	}
+	if analysis.LargeKey.MaxTrackedKeys == 0 {
+		analysis.LargeKey.MaxTrackedKeys = 10000
+	}
+	if analysis.LargeKey.DebugTopN == 0 {
+		analysis.LargeKey.DebugTopN = 100
+	}
 }
 
 func (h HotKeyAnalysisConfig) IsEnabled() bool {
 	return h.Enabled == nil || *h.Enabled
+}
+
+func (l LargeKeyAnalysisConfig) IsEnabled() bool {
+	return l.Enabled == nil || *l.Enabled
 }
 
 func (c *Config) validateAnalysis() error {
@@ -304,6 +341,18 @@ func (c *Config) validateAnalysis() error {
 	}
 	if windowMillis%c.Analysis.HotKey.BucketMillis != 0 {
 		return errors.New("analysis.hotKey windowSeconds must be divisible by bucketMillis")
+	}
+	largeWindowMillis := c.Analysis.LargeKey.WindowSeconds * 1000
+	if c.Analysis.LargeKey.RequestBytesThreshold < 0 ||
+		c.Analysis.LargeKey.ResponseBytesThreshold < 0 ||
+		c.Analysis.LargeKey.WindowSeconds <= 0 ||
+		c.Analysis.LargeKey.BucketMillis <= 0 ||
+		c.Analysis.LargeKey.MaxTrackedKeys <= 0 ||
+		c.Analysis.LargeKey.DebugTopN <= 0 {
+		return errors.New("analysis.largeKey thresholds must be >= 0 and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be > 0")
+	}
+	if largeWindowMillis%c.Analysis.LargeKey.BucketMillis != 0 {
+		return errors.New("analysis.largeKey windowSeconds must be divisible by bucketMillis")
 	}
 	return nil
 }

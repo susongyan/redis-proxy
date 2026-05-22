@@ -184,6 +184,14 @@ analysis:
     bucketMillis: 1000
     maxTrackedKeys: 10000
     metricsTopN: 20
+  largeKey:
+    enabled: true
+    requestBytesThreshold: 1048576
+    responseBytesThreshold: 1048576
+    windowSeconds: 300
+    bucketMillis: 1000
+    maxTrackedKeys: 10000
+    debugTopN: 100
 
 controlPlane:
   enabled: false
@@ -235,7 +243,7 @@ governance:
 - 启用 key 治理时，多 key 命令任意 key 命中禁用或限流都会拒绝整个请求；无法识别 key 位置的命令 fail closed。
 - 治理指标按 Go Prometheus 命名和 Java Micrometer 命名分别暴露，语义保持一致：auth、治理拒绝/告警、namespace 当前连接和 inflight、namespace 配置限额和限流拒绝、key rule 决策、key 限额配置和滑动窗口用量。
 - namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
-- `limits.largeResponseBytes`、`analysis.hotKey.*` 均纳入控制面发布模型；数据面接受更大 `routeEpoch` 后会随 route snapshot 生效。
+- `limits.largeResponseBytes`、`analysis.hotKey.*`、`analysis.largeKey.*` 均纳入控制面发布模型；数据面接受更大 `routeEpoch` 后会随 route snapshot 生效。
 - 所有切换和治理规则必须可审计、可回滚。
 
 核心治理指标：
@@ -268,6 +276,24 @@ governance:
 | 容量满后丢弃数 | `redis_proxy_hot_key_dropped_total{namespace,command}` | `redis.proxy.hot.key.dropped{namespace,command}` |
 | 当前跟踪 key 数 | `redis_proxy_hot_key_tracked_keys` | `redis.proxy.hot.key.tracked.keys` |
 | TopK 计数 | `redis_proxy_hot_key_topk_count{namespace,command,key,rank}` | `redis.proxy.hot.key.topk.count{namespace,command,key,rank}` |
+
+大 key 观测：
+
+- Go / Java 数据面都会在治理通过后复用治理 key parser 做本地大 key 归因，维度为 `namespace + command + key`。
+- `requestBytesThreshold` 和 `responseBytesThreshold` 默认 1MB；请求或最终响应超过阈值时才进入大 key 窗口统计，不拦截请求。
+- 窗口默认 300s，bucket 粒度 1s；`maxTrackedKeys` 控制进程内最多跟踪的组合数量，容量满后的新 key 计入 dropped 指标。
+- 多 key 命令暂按完整请求/响应大小归因到每个可解析 key；无法识别 key 位置的命令不影响转发，只计入 unsupported。
+- `/debug/large-keys?limit=100` 返回当前进程 TopN 明细，按 `max(requestBytes,responseBytes)` 降序。
+- Prometheus / Micrometer 只暴露低基数指标，不把真实 key 写入 metrics label，避免大规模 key 造成高基数风险。
+
+| 语义 | Go 指标 | Java 指标 |
+| --- | --- | --- |
+| 大 key 观测次数 | `redis_proxy_large_key_observed_total{namespace,command,direction}` | `redis.proxy.large.key.observed{namespace,command,direction}` |
+| 容量满后丢弃数 | `redis_proxy_large_key_dropped_total{namespace,command}` | `redis.proxy.large.key.dropped{namespace,command}` |
+| 无法归因命令数 | `redis_proxy_large_key_unsupported_total{command,direction}` | `redis.proxy.large.key.unsupported{command,direction}` |
+| 当前跟踪 key 数 | `redis_proxy_large_key_tracked_keys` | `redis.proxy.large.key.tracked.keys` |
+| 请求阈值 | `redis_proxy_large_key_request_threshold_bytes` | `redis.proxy.large.key.request.threshold.bytes` |
+| 响应阈值 | `redis_proxy_large_key_response_threshold_bytes` | `redis.proxy.large.key.response.threshold.bytes` |
 
 大 response 观测：
 
@@ -542,7 +568,7 @@ Slot cache 刷新策略：
 
 第三阶段：治理能力
 
-状态：第一批治理 MVP 已完成，namespace / key 级本地治理限流已进入实现收敛；访问特征分析待进入后续批次。
+状态：第一批治理 MVP 已完成，namespace / key 级本地治理限流已进入实现收敛；热 key 与大 key 的本地分析 MVP 已落地，后续进入更细粒度指标联动和报告化。
 
 已完成：
 
@@ -559,11 +585,14 @@ Slot cache 刷新策略：
 11. 支持大 response 软阈值观测，记录响应大小分布和超过阈值的命中次数。
 12. `largeResponseBytes`、热 key 窗口、容量和 metrics TopN 已配置化，并随控制面 route snapshot 动态生效。
 13. 已固化 `scripts/e2e-observability-config.sh`，覆盖 Go / Java 动态观测配置切换。
+14. 支持本地进程级大 key 分析，按 `namespace + command + key` 归因请求/响应大小，提供 `/debug/large-keys` 查询和低基数 metrics。
+15. `analysis.largeKey.*` 已纳入控制面 publish、rollback、copy、diff、validation 模型，并随 route snapshot 动态生效。
+16. 动态观测配置 E2E 已覆盖大 key 阈值发布、debug 查询和 metrics 不泄露具体 key。
 
 待完成：
 
 1. pipeline、请求大小治理指标联动。
-2. 大 key 分析 MVP：按 namespace / command / key 做本地 TopN 归因，debug 暴露，metrics 控制低基数。
+2. 大 key 分析报告模板：把 debug TopN、response 分布和治理拒绝数据汇总成一次压测/巡检报告。
 3. 治理审计持久化、token 加密存储和密钥管理接入。
 
 第四阶段：控制面平台化

@@ -71,7 +71,10 @@ config = {
   "backends": {"clusters": [{"name": "redis-a", "nodes": ["127.0.0.1:63820"], "pool": {"connectionsPerNode": 2, "maxInflightPerConnection": 128}}]},
   "routing": {"defaultCluster": "redis-a", "routeEpoch": 1, "clusterSlotsRefreshIntervalSeconds": 30, "rules": []},
   "limits": {"maxPipelineDepth": 1024, "maxRequestBytes": 10485760, "maxResponseBytes": 104857600, "largeResponseBytes": 100000},
-  "analysis": {"hotKey": {"enabled": True, "windowSeconds": 60, "bucketMillis": 1000, "maxTrackedKeys": 1, "metricsTopN": 1}}
+  "analysis": {
+    "hotKey": {"enabled": True, "windowSeconds": 60, "bucketMillis": 1000, "maxTrackedKeys": 1, "metricsTopN": 1},
+    "largeKey": {"enabled": True, "requestBytesThreshold": 100000, "responseBytesThreshold": 100000, "windowSeconds": 300, "bucketMillis": 1000, "maxTrackedKeys": 10000, "debugTopN": 100}
+  }
 }
 print(json.dumps(config))
 PY
@@ -84,6 +87,8 @@ config["routing"]["routeEpoch"] = 2
 config["limits"]["largeResponseBytes"] = 64
 config["analysis"]["hotKey"]["maxTrackedKeys"] = 3
 config["analysis"]["hotKey"]["metricsTopN"] = 2
+config["analysis"]["largeKey"]["requestBytesThreshold"] = 64
+config["analysis"]["largeKey"]["responseBytesThreshold"] = 64
 print(json.dumps({"operator": "e2e", "reason": "observability config switch", "config": config}))
 PY
 
@@ -106,6 +111,7 @@ controlPlane: {enabled: true, url: "http://127.0.0.1:8090/api/v1/config", pollIn
 limits: {maxPipelineDepth: 1024, maxRequestBytes: 10485760, maxResponseBytes: 104857600, largeResponseBytes: 100000}
 analysis:
   hotKey: {enabled: true, windowSeconds: 60, bucketMillis: 1000, maxTrackedKeys: 1, metricsTopN: 1}
+  largeKey: {enabled: true, requestBytesThreshold: 100000, responseBytesThreshold: 100000, windowSeconds: 300, bucketMillis: 1000, maxTrackedKeys: 10000, debugTopN: 100}
 YAML
   (cd "${ROOT}/redis-proxy-dataplane-go" && go run ./cmd/proxy -config "${LOG_DIR}/proxy.yaml" >"${LOG_DIR}/proxy.log" 2>&1) &
 else
@@ -131,6 +137,7 @@ proxy:
   limits: {maxPipelineDepth: 1024, maxRequestBytes: 10485760, maxResponseBytes: 104857600, largeResponseBytes: 100000}
   analysis:
     hotKey: {enabled: true, windowSeconds: 60, bucketMillis: 1000, maxTrackedKeys: 1, metricsTopN: 1}
+    largeKey: {enabled: true, requestBytesThreshold: 100000, responseBytesThreshold: 100000, windowSeconds: 300, bucketMillis: 1000, maxTrackedKeys: 10000, debugTopN: 100}
 YAML
   (cd "${ROOT}/redis-proxy-dataplane-java" && mvn -Dmaven.repo.local=/tmp/redis-proxy-m2 spring-boot:run -Dspring-boot.run.arguments=--spring.config.location="${LOG_DIR}/proxy.yml" >"${LOG_DIR}/proxy.log" 2>&1) &
 fi
@@ -230,6 +237,16 @@ if not expected.issubset(keys):
     raise SystemExit(f"epoch2 hot key capacity update did not take effect: {items!r}")
 PY
 
+curl -fsS "http://127.0.0.1:8080/debug/large-keys?limit=10" >"${LOG_DIR}/large-keys-epoch2.json"
+python3 - <<'PY' "${LOG_DIR}/large-keys-epoch2.json"
+import json
+import sys
+items = json.load(open(sys.argv[1]))
+matches = [item for item in items if item.get("key") == "obs:big" and item.get("maxResponseBytes", 0) >= 128]
+if not matches:
+    raise SystemExit(f"large key debug endpoint did not include obs:big response attribution: {items!r}")
+PY
+
 curl -fsS "$(metrics_url)" >"${LOG_DIR}/metrics-epoch2.prom"
 if [[ "$(large_response_count "${LOG_DIR}/metrics-epoch2.prom")" -lt 1 ]]; then
   echo "large response was not counted after threshold update" >&2
@@ -241,6 +258,14 @@ if ! rg 'redis_proxy_large_response_threshold_bytes 64' "${LOG_DIR}/metrics-epoc
 fi
 if ! rg 'redis_proxy_hot_key_topk_count\{.*rank="2"' "${LOG_DIR}/metrics-epoch2.prom" >/dev/null; then
   echo "hot key metricsTopN update did not expose rank=2" >&2
+  exit 1
+fi
+if ! rg 'redis_proxy_large_key_observed_total\{.*command="GET".*direction="response"' "${LOG_DIR}/metrics-epoch2.prom" >/dev/null; then
+  echo "large key response observation metric was not exposed" >&2
+  exit 1
+fi
+if rg '^redis_proxy_large_key_.*obs:big' "${LOG_DIR}/metrics-epoch2.prom" >/dev/null; then
+  echo "large key metrics leaked concrete key label" >&2
   exit 1
 fi
 

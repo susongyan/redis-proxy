@@ -18,6 +18,17 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 		cfg.Analysis.HotKey.MaxTrackedKeys != 10000 || cfg.Analysis.HotKey.MetricsTopN != 20 {
 		t.Fatalf("hotKey defaults=%+v", cfg.Analysis.HotKey)
 	}
+	if !cfg.Analysis.LargeKey.IsEnabled() {
+		t.Fatal("largeKey.enabled=false want true by default")
+	}
+	if cfg.Analysis.LargeKey.RequestBytesThreshold != 1024*1024 ||
+		cfg.Analysis.LargeKey.ResponseBytesThreshold != 1024*1024 ||
+		cfg.Analysis.LargeKey.WindowSeconds != 300 ||
+		cfg.Analysis.LargeKey.BucketMillis != 1000 ||
+		cfg.Analysis.LargeKey.MaxTrackedKeys != 10000 ||
+		cfg.Analysis.LargeKey.DebugTopN != 100 {
+		t.Fatalf("largeKey defaults=%+v", cfg.Analysis.LargeKey)
+	}
 }
 
 func TestValidateRejectsNegativeClusterSlotRefreshInterval(t *testing.T) {
@@ -92,6 +103,15 @@ func TestValidateRejectsInvalidHotKeyAnalysis(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidLargeKeyAnalysis(t *testing.T) {
+	cfg := validConfig()
+	cfg.Analysis.LargeKey.WindowSeconds = 300
+	cfg.Analysis.LargeKey.BucketMillis = 700
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid large key bucket validation error")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: ServerConfig{Listen: "127.0.0.1:6379"},
@@ -108,6 +128,13 @@ func validConfig() Config {
 			BucketMillis:   1000,
 			MaxTrackedKeys: 10000,
 			MetricsTopN:    20,
+		}, LargeKey: LargeKeyAnalysisConfig{
+			RequestBytesThreshold:  1024,
+			ResponseBytesThreshold: 1024,
+			WindowSeconds:          300,
+			BucketMillis:           1000,
+			MaxTrackedKeys:         10000,
+			DebugTopN:              100,
 		}},
 	}
 }

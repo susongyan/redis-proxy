@@ -36,6 +36,7 @@ type Server struct {
 	nsLimiter *namespaceLimiter
 	keyGov    *keyGovernanceLimiter
 	hotKeys   *analysis.HotKeyTracker
+	largeKeys *analysis.LargeKeyTracker
 }
 
 type completion struct {
@@ -44,10 +45,11 @@ type completion struct {
 	response []byte
 	err      error
 	start    time.Time
+	largeCtx analysis.LargeKeyContext
 }
 
-func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func(), hotKeys *analysis.HotKeyTracker) *Server {
-	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg), hotKeys: hotKeys}
+func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func(), hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker) *Server {
+	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg), hotKeys: hotKeys, largeKeys: largeKeys}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -200,6 +202,8 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 		s.hotKeys.Observe(namespace, req)
+		largeCtx := s.largeKeys.Context(namespace, req)
+		s.largeKeys.ObserveRequest(largeCtx, len(req.Raw))
 		requestNamespace := namespace
 
 		decision, err := s.router.RouteDecision(req)
@@ -213,7 +217,7 @@ func (s *Server) handle(conn net.Conn) {
 
 		err = s.backends.DoAsyncAffinity(decision.Addr, affinity, req.Raw, func(result backend.Result) {
 			s.nsLimiter.finishRequest(requestNamespace)
-			s.completeBackendResult(completions, clientDone, current, cmd, start, decision, affinity, req.Raw, result, false)
+			s.completeBackendResult(completions, clientDone, current, cmd, start, decision, affinity, req.Raw, result, false, largeCtx)
 		})
 		if err != nil {
 			s.nsLimiter.finishRequest(requestNamespace)
@@ -236,13 +240,13 @@ func namespaceLimitLabel(reason string) string {
 	}
 }
 
-func (s *Server) completeBackendResult(completions chan<- completion, clientDone <-chan struct{}, seq uint64, command string, start time.Time, decision router.Decision, affinity uint64, raw []byte, result backend.Result, askRetried bool) {
+func (s *Server) completeBackendResult(completions chan<- completion, clientDone <-chan struct{}, seq uint64, command string, start time.Time, decision router.Decision, affinity uint64, raw []byte, result backend.Result, askRetried bool, largeCtx analysis.LargeKeyContext) {
 	if result.Err != nil || !bytes.HasPrefix(result.Response, []byte("-ASK ")) {
-		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, err: result.Err, start: start})
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, err: result.Err, start: start, largeCtx: largeCtx})
 		return
 	}
 	if askRetried {
-		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, start: start})
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, start: start, largeCtx: largeCtx})
 		return
 	}
 	s.metrics.Ask.Inc()
@@ -260,7 +264,7 @@ func (s *Server) completeBackendResult(completions chan<- completion, clientDone
 		} else {
 			s.metrics.AskRedirects.WithLabelValues("success").Inc()
 		}
-		s.completeBackendResult(completions, clientDone, seq, command, start, decision, affinity, raw, retry, true)
+		s.completeBackendResult(completions, clientDone, seq, command, start, decision, affinity, raw, retry, true, largeCtx)
 	}); err != nil {
 		s.metrics.AskRedirects.WithLabelValues("error").Inc()
 		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start})
@@ -312,6 +316,7 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 		s.metrics.Ask.Inc()
 	}
 	s.observeResponseSize(item.command, len(item.response))
+	s.largeKeys.ObserveResponse(item.largeCtx, len(item.response))
 	if _, err := conn.Write(item.response); err != nil {
 		s.metrics.Errors.WithLabelValues("client_write").Inc()
 		return false

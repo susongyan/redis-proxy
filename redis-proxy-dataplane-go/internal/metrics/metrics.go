@@ -49,6 +49,12 @@ type Registry struct {
 	HotKeyDropped          *prometheus.CounterVec
 	HotKeyTracked          prometheus.Gauge
 	HotKeyTop              *prometheus.GaugeVec
+	LargeKeyObserved       *prometheus.CounterVec
+	LargeKeyDropped        *prometheus.CounterVec
+	LargeKeyUnsupported    *prometheus.CounterVec
+	LargeKeyTracked        prometheus.Gauge
+	LargeKeyRequestThresh  prometheus.Gauge
+	LargeKeyResponseThresh prometheus.Gauge
 }
 
 func NewRegistry() *Registry {
@@ -96,6 +102,12 @@ func NewRegistry() *Registry {
 	r.HotKeyDropped = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_hot_key_dropped_total", Help: "Keys skipped by hot key analyzer when tracking capacity is full"}, []string{"namespace", "command"})
 	r.HotKeyTracked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_hot_key_tracked_keys", Help: "Number of key entries currently tracked by hot key analyzer"})
 	r.HotKeyTop = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_hot_key_topk_count", Help: "Current hot key TopK counts by namespace, command, key and rank"}, []string{"namespace", "command", "key", "rank"})
+	r.LargeKeyObserved = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_large_key_observed_total", Help: "Large key observations by namespace, command and direction"}, []string{"namespace", "command", "direction"})
+	r.LargeKeyDropped = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_large_key_dropped_total", Help: "Large key observations dropped when tracking capacity is full"}, []string{"namespace", "command"})
+	r.LargeKeyUnsupported = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_large_key_unsupported_total", Help: "Large request or response observations whose command key positions are unsupported"}, []string{"command", "direction"})
+	r.LargeKeyTracked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_key_tracked_keys", Help: "Number of key entries currently tracked by large key analyzer"})
+	r.LargeKeyRequestThresh = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_key_request_threshold_bytes", Help: "Configured large key request threshold in bytes"})
+	r.LargeKeyResponseThresh = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_key_response_threshold_bytes", Help: "Configured large key response threshold in bytes"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -142,6 +154,12 @@ func NewRegistry() *Registry {
 		r.HotKeyDropped,
 		r.HotKeyTracked,
 		r.HotKeyTop,
+		r.LargeKeyObserved,
+		r.LargeKeyDropped,
+		r.LargeKeyUnsupported,
+		r.LargeKeyTracked,
+		r.LargeKeyRequestThresh,
+		r.LargeKeyResponseThresh,
 	)
 	return r
 }

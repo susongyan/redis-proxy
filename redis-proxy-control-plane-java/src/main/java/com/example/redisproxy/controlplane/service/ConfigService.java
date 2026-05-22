@@ -100,6 +100,7 @@ public class ConfigService {
         addChange(changes, "limits.maxResponseBytes", a.getLimits().getMaxResponseBytes(), b.getLimits().getMaxResponseBytes());
         addChange(changes, "limits.largeResponseBytes", a.getLimits().getLargeResponseBytes(), b.getLimits().getLargeResponseBytes());
         addChange(changes, "analysis.hotKey", summarizeHotKey(a), summarizeHotKey(b));
+        addChange(changes, "analysis.largeKey", summarizeLargeKey(a), summarizeLargeKey(b));
         addChange(changes, "governance", summarizeGovernance(a), summarizeGovernance(b));
         return new ConfigDiff(fromVersionId, toVersionId, changes);
     }
@@ -222,6 +223,17 @@ public class ConfigService {
                 || windowMillis % hotKey.getBucketMillis() != 0) {
             throw new IllegalArgumentException("analysis.hotKey windowSeconds, bucketMillis, maxTrackedKeys and metricsTopN must be positive and window must be divisible by bucket");
         }
+        ProxyConfig.LargeKey largeKey = analysis.getLargeKey();
+        int largeWindowMillis = largeKey.getWindowSeconds() * 1000;
+        if (largeKey.getRequestBytesThreshold() < 0
+                || largeKey.getResponseBytesThreshold() < 0
+                || largeKey.getWindowSeconds() <= 0
+                || largeKey.getBucketMillis() <= 0
+                || largeKey.getMaxTrackedKeys() <= 0
+                || largeKey.getDebugTopN() <= 0
+                || largeWindowMillis % largeKey.getBucketMillis() != 0) {
+            throw new IllegalArgumentException("analysis.largeKey thresholds must be non-negative and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be positive with window divisible by bucket");
+        }
     }
 
     private static void validateGovernance(ProxyConfig.Governance governance) {
@@ -335,6 +347,17 @@ public class ConfigService {
                 + ":" + hotKey.getMetricsTopN();
     }
 
+    private static String summarizeLargeKey(ProxyConfig config) {
+        ProxyConfig.LargeKey largeKey = config.getAnalysis().getLargeKey();
+        return largeKey.isEnabled()
+                + ":" + largeKey.getRequestBytesThreshold()
+                + ":" + largeKey.getResponseBytesThreshold()
+                + ":" + largeKey.getWindowSeconds()
+                + ":" + largeKey.getBucketMillis()
+                + ":" + largeKey.getMaxTrackedKeys()
+                + ":" + largeKey.getDebugTopN();
+    }
+
     private static String summarizeGovernance(ProxyConfig config) {
         return config.getGovernance().isEnabled()
                 + ":" + config.getGovernance().isRequireAuth()
@@ -403,6 +426,15 @@ public class ConfigService {
         hotKey.setMaxTrackedKeys(source.getAnalysis().getHotKey().getMaxTrackedKeys());
         hotKey.setMetricsTopN(source.getAnalysis().getHotKey().getMetricsTopN());
         analysis.setHotKey(hotKey);
+        ProxyConfig.LargeKey largeKey = new ProxyConfig.LargeKey();
+        largeKey.setEnabled(source.getAnalysis().getLargeKey().isEnabled());
+        largeKey.setRequestBytesThreshold(source.getAnalysis().getLargeKey().getRequestBytesThreshold());
+        largeKey.setResponseBytesThreshold(source.getAnalysis().getLargeKey().getResponseBytesThreshold());
+        largeKey.setWindowSeconds(source.getAnalysis().getLargeKey().getWindowSeconds());
+        largeKey.setBucketMillis(source.getAnalysis().getLargeKey().getBucketMillis());
+        largeKey.setMaxTrackedKeys(source.getAnalysis().getLargeKey().getMaxTrackedKeys());
+        largeKey.setDebugTopN(source.getAnalysis().getLargeKey().getDebugTopN());
+        analysis.setLargeKey(largeKey);
         copy.setAnalysis(analysis);
         copy.setGovernance(copyGovernance(source.getGovernance()));
         return copy;

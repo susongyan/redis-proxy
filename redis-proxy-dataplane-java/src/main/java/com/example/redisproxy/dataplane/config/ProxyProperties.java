@@ -210,11 +210,15 @@ public class ProxyProperties {
 
     public static class Analysis {
         private HotKey hotKey = new HotKey();
+        private LargeKey largeKey = new LargeKey();
         public HotKey getHotKey() { return hotKey; }
         public void setHotKey(HotKey hotKey) { this.hotKey = hotKey; }
+        public LargeKey getLargeKey() { return largeKey; }
+        public void setLargeKey(LargeKey largeKey) { this.largeKey = largeKey; }
 
         void validate() {
             hotKey.validate();
+            largeKey.validate();
         }
     }
 
@@ -239,6 +243,37 @@ public class ProxyProperties {
             int windowMillis = windowSeconds * 1000;
             if (windowSeconds <= 0 || bucketMillis <= 0 || maxTrackedKeys <= 0 || metricsTopN <= 0 || windowMillis % bucketMillis != 0) {
                 throw new IllegalArgumentException("analysis.hotKey windowSeconds, bucketMillis, maxTrackedKeys and metricsTopN must be positive and window must be divisible by bucket");
+            }
+        }
+    }
+
+    public static class LargeKey {
+        private boolean enabled = true;
+        private int requestBytesThreshold = 1024 * 1024;
+        private int responseBytesThreshold = 1024 * 1024;
+        private int windowSeconds = 300;
+        private int bucketMillis = 1000;
+        private int maxTrackedKeys = 10_000;
+        private int debugTopN = 100;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getRequestBytesThreshold() { return requestBytesThreshold; }
+        public void setRequestBytesThreshold(int requestBytesThreshold) { this.requestBytesThreshold = requestBytesThreshold; }
+        public int getResponseBytesThreshold() { return responseBytesThreshold; }
+        public void setResponseBytesThreshold(int responseBytesThreshold) { this.responseBytesThreshold = responseBytesThreshold; }
+        public int getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
+        public int getBucketMillis() { return bucketMillis; }
+        public void setBucketMillis(int bucketMillis) { this.bucketMillis = bucketMillis; }
+        public int getMaxTrackedKeys() { return maxTrackedKeys; }
+        public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
+        public int getDebugTopN() { return debugTopN; }
+        public void setDebugTopN(int debugTopN) { this.debugTopN = debugTopN; }
+
+        void validate() {
+            int windowMillis = windowSeconds * 1000;
+            if (requestBytesThreshold < 0 || responseBytesThreshold < 0 || windowSeconds <= 0 || bucketMillis <= 0 || maxTrackedKeys <= 0 || debugTopN <= 0 || windowMillis % bucketMillis != 0) {
+                throw new IllegalArgumentException("analysis.largeKey thresholds must be non-negative and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be positive with window divisible by bucket");
             }
         }
     }

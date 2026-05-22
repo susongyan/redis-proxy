@@ -130,8 +130,11 @@ public class ProxyConfig {
 
     public static class Analysis {
         @Valid private HotKey hotKey = new HotKey();
+        @Valid private LargeKey largeKey = new LargeKey();
         public HotKey getHotKey() { return hotKey; }
         public void setHotKey(HotKey hotKey) { this.hotKey = hotKey; }
+        public LargeKey getLargeKey() { return largeKey; }
+        public void setLargeKey(LargeKey largeKey) { this.largeKey = largeKey; }
     }
 
     public static class HotKey {
@@ -150,6 +153,30 @@ public class ProxyConfig {
         public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
         public int getMetricsTopN() { return metricsTopN; }
         public void setMetricsTopN(int metricsTopN) { this.metricsTopN = metricsTopN; }
+    }
+
+    public static class LargeKey {
+        private boolean enabled = true;
+        private int requestBytesThreshold = 1024 * 1024;
+        private int responseBytesThreshold = 1024 * 1024;
+        private int windowSeconds = 300;
+        private int bucketMillis = 1000;
+        private int maxTrackedKeys = 10_000;
+        private int debugTopN = 100;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getRequestBytesThreshold() { return requestBytesThreshold; }
+        public void setRequestBytesThreshold(int requestBytesThreshold) { this.requestBytesThreshold = requestBytesThreshold; }
+        public int getResponseBytesThreshold() { return responseBytesThreshold; }
+        public void setResponseBytesThreshold(int responseBytesThreshold) { this.responseBytesThreshold = responseBytesThreshold; }
+        public int getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
+        public int getBucketMillis() { return bucketMillis; }
+        public void setBucketMillis(int bucketMillis) { this.bucketMillis = bucketMillis; }
+        public int getMaxTrackedKeys() { return maxTrackedKeys; }
+        public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
+        public int getDebugTopN() { return debugTopN; }
+        public void setDebugTopN(int debugTopN) { this.debugTopN = debugTopN; }
     }
 
     public static class Governance {

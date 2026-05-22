@@ -49,3 +49,11 @@ proxy:
       bucketMillis: 1000
       maxTrackedKeys: 10000
       metricsTopN: 20
+    largeKey:
+      enabled: true
+      requestBytesThreshold: 1048576
+      responseBytesThreshold: 1048576
+      windowSeconds: 300
+      bucketMillis: 1000
+      maxTrackedKeys: 10000
+      debugTopN: 100

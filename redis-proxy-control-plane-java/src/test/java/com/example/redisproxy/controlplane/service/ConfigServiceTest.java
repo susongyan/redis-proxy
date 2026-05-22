@@ -204,6 +204,12 @@ class ConfigServiceTest {
         next.getAnalysis().getHotKey().setBucketMillis(2000);
         next.getAnalysis().getHotKey().setMaxTrackedKeys(20000);
         next.getAnalysis().getHotKey().setMetricsTopN(50);
+        next.getAnalysis().getLargeKey().setRequestBytesThreshold(2048);
+        next.getAnalysis().getLargeKey().setResponseBytesThreshold(4096);
+        next.getAnalysis().getLargeKey().setWindowSeconds(600);
+        next.getAnalysis().getLargeKey().setBucketMillis(2000);
+        next.getAnalysis().getLargeKey().setMaxTrackedKeys(30000);
+        next.getAnalysis().getLargeKey().setDebugTopN(200);
         ProxyConfig.Namespace namespace = new ProxyConfig.Namespace();
         namespace.setName("app-a");
         namespace.setToken("token-a");
@@ -230,9 +236,12 @@ class ConfigServiceTest {
         assertThat(version.config().getLimits().getLargeResponseBytes()).isEqualTo(4096);
         assertThat(version.config().getAnalysis().getHotKey().getWindowSeconds()).isEqualTo(120);
         assertThat(version.config().getAnalysis().getHotKey().getMaxTrackedKeys()).isEqualTo(20000);
+        assertThat(version.config().getAnalysis().getLargeKey().getResponseBytesThreshold()).isEqualTo(4096);
+        assertThat(version.config().getAnalysis().getLargeKey().getDebugTopN()).isEqualTo(200);
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getDisabledKeys()).containsExactly("app-a:blocked");
         assertThat(version.config().getGovernance().getNamespaces().getFirst().getKeyRules().getFirst().getName()).isEqualTo("hot");
         assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("analysis.hotKey"));
+        assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("analysis.largeKey"));
         assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("governance"));
 
         RollbackRequest rollback = new RollbackRequest();
@@ -241,6 +250,7 @@ class ConfigServiceTest {
         assertThat(rollbackVersion.config().getRouting().getRouteEpoch()).isEqualTo(3);
         assertThat(rollbackVersion.config().getLimits().getLargeResponseBytes()).isEqualTo(4096);
         assertThat(rollbackVersion.config().getAnalysis().getHotKey().getMetricsTopN()).isEqualTo(50);
+        assertThat(rollbackVersion.config().getAnalysis().getLargeKey().getMaxTrackedKeys()).isEqualTo(30000);
         assertThat(rollbackVersion.config().getGovernance().getNamespaces().getFirst().getKeyRules().getFirst().getMaxQps()).isEqualTo(1);
     }
 
@@ -294,6 +304,12 @@ class ConfigServiceTest {
                 .hasMessageContaining("analysis.hotKey");
 
         next.getAnalysis().getHotKey().setBucketMillis(1000);
+        next.getAnalysis().getLargeKey().setBucketMillis(700);
+        assertThatThrownBy(() -> service.publish(publishRequest(next, "alice", "bad large key analysis")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("analysis.largeKey");
+
+        next.getAnalysis().getLargeKey().setBucketMillis(1000);
         ProxyConfig.KeyRule badRule = new ProxyConfig.KeyRule();
         badRule.setName("bad");
         namespace.setKeyRules(List.of(badRule));
