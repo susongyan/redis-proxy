@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/governance"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
 	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
@@ -21,6 +22,7 @@ const (
 type HotKeyTracker struct {
 	mu             sync.Mutex
 	reg            *metrics.Registry
+	enabled        bool
 	maxTracked     int
 	metricsTopN    int
 	window         time.Duration
@@ -59,17 +61,58 @@ type hotKeyBucket struct {
 	count int64
 }
 
-func NewHotKeyTracker(reg *metrics.Registry) *HotKeyTracker {
-	bucketCount := int(defaultHotKeyWindow / defaultHotKeyBucket)
-	return &HotKeyTracker{
+func NewHotKeyTracker(reg *metrics.Registry, cfg config.HotKeyAnalysisConfig) *HotKeyTracker {
+	t := &HotKeyTracker{
 		reg:         reg,
+		enabled:     true,
 		maxTracked:  defaultMaxTrackedHotKeys,
 		metricsTopN: defaultHotKeyMetricsTopN,
 		window:      defaultHotKeyWindow,
 		bucket:      defaultHotKeyBucket,
-		bucketCount: bucketCount,
+		bucketCount: int(defaultHotKeyWindow / defaultHotKeyBucket),
 		counts:      map[hotKey]*hotKeyWindow{},
 		now:         time.Now,
+	}
+	t.Configure(cfg)
+	return t
+}
+
+func (t *HotKeyTracker) Configure(cfg config.HotKeyAnalysisConfig) {
+	if t == nil {
+		return
+	}
+	window := time.Duration(cfg.WindowSeconds) * time.Second
+	bucket := time.Duration(cfg.BucketMillis) * time.Millisecond
+	if window <= 0 {
+		window = defaultHotKeyWindow
+	}
+	if bucket <= 0 {
+		bucket = defaultHotKeyBucket
+	}
+	bucketCount := int(window / bucket)
+	if bucketCount <= 0 {
+		bucketCount = int(defaultHotKeyWindow / defaultHotKeyBucket)
+	}
+	maxTracked := cfg.MaxTrackedKeys
+	if maxTracked <= 0 {
+		maxTracked = defaultMaxTrackedHotKeys
+	}
+	metricsTopN := cfg.MetricsTopN
+	if metricsTopN <= 0 {
+		metricsTopN = defaultHotKeyMetricsTopN
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	changedWindow := t.bucketCount != bucketCount || t.bucket != bucket || t.window != window
+	changedCapacity := t.maxTracked != maxTracked
+	t.enabled = cfg.IsEnabled()
+	t.maxTracked = maxTracked
+	t.metricsTopN = metricsTopN
+	t.window = window
+	t.bucket = bucket
+	t.bucketCount = bucketCount
+	if changedWindow || changedCapacity || !t.enabled {
+		t.clearLocked()
 	}
 }
 
@@ -84,6 +127,9 @@ func (t *HotKeyTracker) Observe(namespace string, req protocol.Request) {
 	command := req.Command()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.enabled {
+		return
+	}
 	now := t.now()
 	currentBucket := now.UnixNano() / t.bucket.Nanoseconds()
 	for _, raw := range keys {
@@ -103,7 +149,7 @@ func (t *HotKeyTracker) Observe(namespace string, req protocol.Request) {
 	t.pruneLocked(currentBucket)
 	t.reg.HotKeyTracked.Set(float64(len(t.counts)))
 	if t.lastRefresh.IsZero() || now.Sub(t.lastRefresh) >= time.Second {
-		t.refreshMetricsLocked(defaultHotKeyMetricsTopN)
+		t.refreshMetricsLocked(t.metricsTopN)
 		t.lastRefresh = now
 	}
 }
@@ -113,13 +159,25 @@ func (t *HotKeyTracker) Snapshot(limit int) []HotKeyEntry {
 		return nil
 	}
 	if limit <= 0 {
-		limit = defaultHotKeyMetricsTopN
+		limit = t.metricsTopN
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.enabled {
+		return nil
+	}
 	t.pruneLocked(t.now().UnixNano() / t.bucket.Nanoseconds())
 	t.reg.HotKeyTracked.Set(float64(len(t.counts)))
 	return t.topLocked(limit)
+}
+
+func (t *HotKeyTracker) clearLocked() {
+	for _, label := range t.lastMetricKeys {
+		t.reg.HotKeyTop.DeleteLabelValues(label.Namespace, label.Command, label.Key, label.Rank)
+	}
+	t.counts = map[hotKey]*hotKeyWindow{}
+	t.lastMetricKeys = nil
+	t.reg.HotKeyTracked.Set(0)
 }
 
 func (t *HotKeyTracker) refreshMetricsLocked(limit int) {

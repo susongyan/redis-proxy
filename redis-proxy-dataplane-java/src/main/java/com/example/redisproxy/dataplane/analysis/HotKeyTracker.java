@@ -1,5 +1,6 @@
 package com.example.redisproxy.dataplane.analysis;
 
+import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import io.micrometer.core.instrument.Gauge;
@@ -28,16 +29,44 @@ public class HotKeyTracker {
     private final AtomicInteger trackedKeys = new AtomicInteger();
     private Clock clock = Clock.systemUTC();
     private long lastRefreshMillis;
+    private boolean enabled = true;
     private int maxTracked = DEFAULT_MAX_TRACKED;
+    private int metricsTopN = DEFAULT_METRICS_TOP_N;
     private long bucketMillis = DEFAULT_BUCKET_MILLIS;
     private int bucketCount = (int) (DEFAULT_WINDOW_MILLIS / DEFAULT_BUCKET_MILLIS);
 
-    public HotKeyTracker(MeterRegistry registry) {
+    public HotKeyTracker(MeterRegistry registry, ProxyProperties properties) {
         this.registry = registry;
         Gauge.builder("redis.proxy.hot.key.tracked.keys", trackedKeys, AtomicInteger::get).register(registry);
+        configure(properties.getAnalysis().getHotKey());
+    }
+
+    HotKeyTracker(MeterRegistry registry) {
+        this(registry, new ProxyProperties());
+    }
+
+    public synchronized void configure(ProxyProperties.HotKey config) {
+        long nextWindowMillis = Math.max(1, config.getWindowSeconds()) * 1000L;
+        long nextBucketMillis = Math.max(1, config.getBucketMillis());
+        int nextBucketCount = Math.max(1, (int) (nextWindowMillis / nextBucketMillis));
+        int nextMaxTracked = Math.max(1, config.getMaxTrackedKeys());
+        int nextMetricsTopN = Math.max(1, config.getMetricsTopN());
+        boolean changedWindow = this.bucketMillis != nextBucketMillis || this.bucketCount != nextBucketCount;
+        boolean changedCapacity = this.maxTracked != nextMaxTracked;
+        this.enabled = config.isEnabled();
+        this.bucketMillis = nextBucketMillis;
+        this.bucketCount = nextBucketCount;
+        this.maxTracked = nextMaxTracked;
+        this.metricsTopN = nextMetricsTopN;
+        if (changedWindow || changedCapacity || !enabled) {
+            clear();
+        }
     }
 
     public synchronized void observe(String namespace, RespRequest request) {
+        if (!enabled) {
+            return;
+        }
         GovernancePolicy.KeyResult keys = GovernancePolicy.keys(request);
         if (!keys.supported() || keys.keys().isEmpty()) {
             return;
@@ -69,7 +98,10 @@ public class HotKeyTracker {
 
     public synchronized List<Entry> snapshot(int limit) {
         if (limit <= 0) {
-            limit = DEFAULT_METRICS_TOP_N;
+            limit = metricsTopN;
+        }
+        if (!enabled) {
+            return List.of();
         }
         prune(clock.millis() / bucketMillis);
         trackedKeys.set(counts.size());
@@ -96,7 +128,7 @@ public class HotKeyTracker {
             registry.remove(meter);
         }
         topMeters.clear();
-        List<Entry> top = top(DEFAULT_METRICS_TOP_N);
+        List<Entry> top = top(metricsTopN);
         for (int i = 0; i < top.size(); i++) {
             Entry entry = top.get(i);
             AtomicInteger value = new AtomicInteger((int) Math.min(Integer.MAX_VALUE, entry.count()));
@@ -109,6 +141,15 @@ public class HotKeyTracker {
                     .register(registry);
             topMeters.add(meter);
         }
+    }
+
+    private void clear() {
+        for (Meter meter : topMeters) {
+            registry.remove(meter);
+        }
+        topMeters.clear();
+        counts.clear();
+        trackedKeys.set(0);
     }
 
     private List<Entry> top(int limit) {

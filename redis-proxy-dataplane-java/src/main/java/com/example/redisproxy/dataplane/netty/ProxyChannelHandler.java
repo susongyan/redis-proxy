@@ -2,7 +2,6 @@ package com.example.redisproxy.dataplane.netty;
 
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.analysis.HotKeyTracker;
-import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
 import com.example.redisproxy.dataplane.governance.KeyGovernanceLimiter;
 import com.example.redisproxy.dataplane.governance.NamespaceLimiter;
@@ -29,7 +28,6 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             AttributeKey.valueOf("redis.proxy.namespace");
 
     private final RouteResolver routeResolver;
-    private final ProxyProperties properties;
     private final BackendPool backendPool;
     private final ClusterSlotRefresher slotRefresher;
     private final NamespaceLimiter namespaceLimiter;
@@ -41,9 +39,8 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
     private final Counter moved;
     private final Counter ask;
 
-    public ProxyChannelHandler(RouteResolver routeResolver, ProxyProperties properties, BackendPool backendPool, ClusterSlotRefresher slotRefresher, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
+    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, ClusterSlotRefresher slotRefresher, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
         this.routeResolver = routeResolver;
-        this.properties = properties;
         this.backendPool = backendPool;
         this.slotRefresher = slotRefresher;
         this.namespaceLimiter = namespaceLimiter;
@@ -207,7 +204,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
 
     private void observeResponseSize(String command, int size) {
         registry.summary("redis.proxy.response.bytes", "command", command).record(size);
-        int threshold = properties.getLimits().getLargeResponseBytes();
+        int threshold = routeResolver.limits().getLargeResponseBytes();
         if (threshold > 0 && size >= threshold) {
             registry.counter("redis.proxy.large.response", "command", command).increment();
         }

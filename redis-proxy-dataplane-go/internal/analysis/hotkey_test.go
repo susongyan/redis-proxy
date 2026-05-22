@@ -4,13 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/redis-proxy-dataplane-go/internal/config"
 	"github.com/example/redis-proxy-dataplane-go/internal/metrics"
 	"github.com/example/redis-proxy-dataplane-go/internal/protocol"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestHotKeyTrackerTopK(t *testing.T) {
-	tracker := NewHotKeyTracker(metrics.NewRegistry())
+	tracker := NewHotKeyTracker(metrics.NewRegistry(), config.HotKeyAnalysisConfig{})
 	tracker.now = func() time.Time { return time.Unix(10, 0) }
 	tracker.Observe("app-a", request("GET", "key-1"))
 	tracker.Observe("app-a", request("GET", "key-1"))
@@ -30,8 +31,7 @@ func TestHotKeyTrackerTopK(t *testing.T) {
 
 func TestHotKeyTrackerMetricsAndCapacity(t *testing.T) {
 	reg := metrics.NewRegistry()
-	tracker := NewHotKeyTracker(reg)
-	tracker.maxTracked = 1
+	tracker := NewHotKeyTracker(reg, config.HotKeyAnalysisConfig{MaxTrackedKeys: 1})
 	tracker.now = func() time.Time { return time.Unix(10, 0) }
 
 	tracker.Observe("app-a", request("GET", "key-1"))
@@ -53,7 +53,7 @@ func TestHotKeyTrackerMetricsAndCapacity(t *testing.T) {
 
 func TestHotKeyTrackerSlidingWindowExpiresOldCounts(t *testing.T) {
 	reg := metrics.NewRegistry()
-	tracker := NewHotKeyTracker(reg)
+	tracker := NewHotKeyTracker(reg, config.HotKeyAnalysisConfig{WindowSeconds: 60, BucketMillis: 1000})
 	now := time.Unix(0, 0)
 	tracker.now = func() time.Time { return now }
 
@@ -73,6 +73,19 @@ func TestHotKeyTrackerSlidingWindowExpiresOldCounts(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(reg.HotKeyTracked); got != 1 {
 		t.Fatalf("tracked after expiry=%v want 1", got)
+	}
+}
+
+func TestHotKeyTrackerCanBeDisabled(t *testing.T) {
+	reg := metrics.NewRegistry()
+	enabled := false
+	tracker := NewHotKeyTracker(reg, config.HotKeyAnalysisConfig{Enabled: &enabled})
+	tracker.now = func() time.Time { return time.Unix(10, 0) }
+
+	tracker.Observe("app-a", request("GET", "key-1"))
+
+	if top := tracker.Snapshot(10); len(top) != 0 {
+		t.Fatalf("top len=%d want 0", len(top))
 	}
 }
 

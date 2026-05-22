@@ -11,6 +11,13 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 	if cfg.Limits.LargeResponseBytes != 1024*1024 {
 		t.Fatalf("largeResponseBytes=%d want 1048576", cfg.Limits.LargeResponseBytes)
 	}
+	if !cfg.Analysis.HotKey.IsEnabled() {
+		t.Fatal("hotKey.enabled=false want true by default")
+	}
+	if cfg.Analysis.HotKey.WindowSeconds != 60 || cfg.Analysis.HotKey.BucketMillis != 1000 ||
+		cfg.Analysis.HotKey.MaxTrackedKeys != 10000 || cfg.Analysis.HotKey.MetricsTopN != 20 {
+		t.Fatalf("hotKey defaults=%+v", cfg.Analysis.HotKey)
+	}
 }
 
 func TestValidateRejectsNegativeClusterSlotRefreshInterval(t *testing.T) {
@@ -74,6 +81,17 @@ func TestValidateGovernance(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidHotKeyAnalysis(t *testing.T) {
+	cfg := validConfig()
+	cfg.Analysis.HotKey.WindowSeconds = 60
+	cfg.Analysis.HotKey.BucketMillis = 700
+	cfg.Analysis.HotKey.MaxTrackedKeys = 10000
+	cfg.Analysis.HotKey.MetricsTopN = 20
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid hot key bucket validation error")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: ServerConfig{Listen: "127.0.0.1:6379"},
@@ -85,5 +103,11 @@ func validConfig() Config {
 		}}},
 		Routing: RoutingConfig{DefaultCluster: "redis-a"},
 		Limits:  LimitsConfig{MaxPipelineDepth: 1024, MaxRequestBytes: 1024, MaxResponseBytes: 1024, LargeResponseBytes: 512},
+		Analysis: AnalysisConfig{HotKey: HotKeyAnalysisConfig{
+			WindowSeconds:  60,
+			BucketMillis:   1000,
+			MaxTrackedKeys: 10000,
+			MetricsTopN:    20,
+		}},
 	}
 }

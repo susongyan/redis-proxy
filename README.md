@@ -177,6 +177,14 @@ limits:
   maxResponseBytes: 104857600
   largeResponseBytes: 1048576
 
+analysis:
+  hotKey:
+    enabled: true
+    windowSeconds: 60
+    bucketMillis: 1000
+    maxTrackedKeys: 10000
+    metricsTopN: 20
+
 controlPlane:
   enabled: false
   url: "http://127.0.0.1:8090/api/v1/config"
@@ -227,6 +235,7 @@ governance:
 - 启用 key 治理时，多 key 命令任意 key 命中禁用或限流都会拒绝整个请求；无法识别 key 位置的命令 fail closed。
 - 治理指标按 Go Prometheus 命名和 Java Micrometer 命名分别暴露，语义保持一致：auth、治理拒绝/告警、namespace 当前连接和 inflight、namespace 配置限额和限流拒绝、key rule 决策、key 限额配置和滑动窗口用量。
 - namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
+- `limits.largeResponseBytes`、`analysis.hotKey.*` 均纳入控制面发布模型；数据面接受更大 `routeEpoch` 后会随 route snapshot 生效。
 - 所有切换和治理规则必须可审计、可回滚。
 
 核心治理指标：
@@ -248,10 +257,10 @@ governance:
 热 key 观测：
 
 - Go / Java 数据面都会在治理通过、进入路由前，对已支持 key 解析的命令做本地滑动窗口计数。
-- TopK 默认统计最近 60s 窗口，bucket 粒度 1s；过期 key 会在观测或 debug 查询时被清理。
-- 进程内最多跟踪 10000 个 `namespace + command + key` 组合；超过上限的新 key 会被跳过并计入 dropped 指标。
+- TopK 默认统计最近 60s 窗口，bucket 粒度 1s；可通过 `analysis.hotKey.windowSeconds` / `bucketMillis` 调整，过期 key 会在观测或 debug 查询时被清理。
+- 进程内默认最多跟踪 10000 个 `namespace + command + key` 组合，可通过 `analysis.hotKey.maxTrackedKeys` 调整；超过上限的新 key 会被跳过并计入 dropped 指标。
 - `/debug/hot-keys?limit=20` 返回当前进程内 TopK 明细。
-- metrics 只暴露 Top 20，避免把全量 key 写入高基数 label。
+- metrics 默认只暴露 Top 20，可通过 `analysis.hotKey.metricsTopN` 调整，避免把全量 key 写入高基数 label。
 
 | 语义 | Go 指标 | Java 指标 |
 | --- | --- | --- |
@@ -263,7 +272,7 @@ governance:
 大 response 观测：
 
 - `maxResponseBytes` 是硬上限，超过后 backend frame 读取失败并返回 backend unavailable。
-- `largeResponseBytes` 是软阈值，默认 1MB；超过只打指标，不拦截请求。
+- `largeResponseBytes` 是软阈值，默认 1MB；超过只打指标，不拦截请求；控制面发布更大 `routeEpoch` 后可动态调整。
 - 统计发生在最终响应写回客户端前，`ASKING` 的中间 `+OK` 不计入最终业务响应。
 
 | 语义 | Go 指标 | Java 指标 |

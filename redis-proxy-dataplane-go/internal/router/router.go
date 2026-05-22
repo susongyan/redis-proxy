@@ -25,6 +25,8 @@ type Router struct {
 	defaultCluster string
 	clusters       map[string]config.ClusterConfig
 	rules          []config.RouteRuleConfig
+	limits         config.LimitsConfig
+	analysis       config.AnalysisConfig
 	governance     config.GovernanceConfig
 	states         map[string]*clusterState
 }
@@ -70,6 +72,8 @@ func New(cfg *config.Config) (*Router, error) {
 		defaultCluster: cfg.Routing.DefaultCluster,
 		clusters:       clusters,
 		rules:          append([]config.RouteRuleConfig(nil), cfg.Routing.Rules...),
+		limits:         cfg.Limits,
+		analysis:       cfg.Analysis,
 		governance:     cfg.Governance,
 		states:         states,
 	}, nil
@@ -115,6 +119,14 @@ func (m *Manager) SnapshotInfo() SnapshotInfo {
 
 func (m *Manager) Governance() config.GovernanceConfig {
 	return m.Current().governance
+}
+
+func (m *Manager) Limits() config.LimitsConfig {
+	return m.Current().limits
+}
+
+func (m *Manager) Analysis() config.AnalysisConfig {
+	return m.Current().analysis
 }
 
 func (m *Manager) CurrentEpoch() int64 {

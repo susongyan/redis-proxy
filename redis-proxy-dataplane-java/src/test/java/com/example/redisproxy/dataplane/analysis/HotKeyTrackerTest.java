@@ -2,6 +2,7 @@ package com.example.redisproxy.dataplane.analysis;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.Unpooled;
@@ -64,6 +65,23 @@ class HotKeyTrackerTest {
                 .extracting(HotKeyTracker.Entry::key, HotKeyTracker.Entry::count)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple("key-2", 1L));
         assertThat(registry.get("redis.proxy.hot.key.tracked.keys").gauge().value()).isEqualTo(1.0);
+    }
+
+    @Test
+    void appliesRuntimeConfigurationAndCanDisableObservation() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        HotKeyTracker tracker = new HotKeyTracker(registry);
+        ProxyProperties.HotKey hotKey = new ProxyProperties.HotKey();
+        hotKey.setEnabled(false);
+        hotKey.setWindowSeconds(60);
+        hotKey.setBucketMillis(1000);
+        hotKey.setMaxTrackedKeys(100);
+        hotKey.setMetricsTopN(10);
+        tracker.configure(hotKey);
+
+        tracker.observe("app-a", request("GET", "key-1"));
+
+        assertThat(tracker.snapshot(10)).isEmpty();
     }
 
     private static RespRequest request(String... args) {

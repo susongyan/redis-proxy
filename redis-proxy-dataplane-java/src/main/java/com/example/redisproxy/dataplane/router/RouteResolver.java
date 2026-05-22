@@ -235,6 +235,14 @@ public class RouteResolver {
         return snapshot.get().properties().getGovernance();
     }
 
+    public ProxyProperties.Limits limits() {
+        return snapshot.get().properties().getLimits();
+    }
+
+    public ProxyProperties.Analysis analysis() {
+        return snapshot.get().properties().getAnalysis();
+    }
+
     public ApplyResult applyConfig(ProxyProperties next, BackendPool backendPool) {
         next.validate();
         Snapshot current = snapshot.get();

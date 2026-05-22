@@ -16,6 +16,7 @@ public class ProxyProperties {
     private Routing routing = new Routing();
     private Limits limits = new Limits();
     private ControlPlane controlPlane = new ControlPlane();
+    private Analysis analysis = new Analysis();
     private Governance governance = new Governance();
 
     public void validate() {
@@ -34,6 +35,7 @@ public class ProxyProperties {
         if (limits.maxPipelineDepth <= 0 || limits.maxRequestBytes <= 0 || limits.maxResponseBytes <= 0 || limits.largeResponseBytes < 0) {
             throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
         }
+        analysis.validate();
         if (controlPlane.enabled && (controlPlane.url == null || controlPlane.url.isBlank())) {
             throw new IllegalArgumentException("controlPlane.url is required when controlPlane.enabled=true");
         }
@@ -90,6 +92,8 @@ public class ProxyProperties {
     public void setLimits(Limits limits) { this.limits = limits; }
     public ControlPlane getControlPlane() { return controlPlane; }
     public void setControlPlane(ControlPlane controlPlane) { this.controlPlane = controlPlane; }
+    public Analysis getAnalysis() { return analysis; }
+    public void setAnalysis(Analysis analysis) { this.analysis = analysis; }
     public Governance getGovernance() { return governance; }
     public void setGovernance(Governance governance) { this.governance = governance; }
 
@@ -202,6 +206,41 @@ public class ProxyProperties {
         public void setMaxResponseBytes(int maxResponseBytes) { this.maxResponseBytes = maxResponseBytes; }
         public int getLargeResponseBytes() { return largeResponseBytes; }
         public void setLargeResponseBytes(int largeResponseBytes) { this.largeResponseBytes = largeResponseBytes; }
+    }
+
+    public static class Analysis {
+        private HotKey hotKey = new HotKey();
+        public HotKey getHotKey() { return hotKey; }
+        public void setHotKey(HotKey hotKey) { this.hotKey = hotKey; }
+
+        void validate() {
+            hotKey.validate();
+        }
+    }
+
+    public static class HotKey {
+        private boolean enabled = true;
+        private int windowSeconds = 60;
+        private int bucketMillis = 1000;
+        private int maxTrackedKeys = 10_000;
+        private int metricsTopN = 20;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
+        public int getBucketMillis() { return bucketMillis; }
+        public void setBucketMillis(int bucketMillis) { this.bucketMillis = bucketMillis; }
+        public int getMaxTrackedKeys() { return maxTrackedKeys; }
+        public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
+        public int getMetricsTopN() { return metricsTopN; }
+        public void setMetricsTopN(int metricsTopN) { this.metricsTopN = metricsTopN; }
+
+        void validate() {
+            int windowMillis = windowSeconds * 1000;
+            if (windowSeconds <= 0 || bucketMillis <= 0 || maxTrackedKeys <= 0 || metricsTopN <= 0 || windowMillis % bucketMillis != 0) {
+                throw new IllegalArgumentException("analysis.hotKey windowSeconds, bucketMillis, maxTrackedKeys and metricsTopN must be positive and window must be divisible by bucket");
+            }
+        }
     }
 
     public static class Governance {

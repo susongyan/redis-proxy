@@ -99,6 +99,7 @@ public class ConfigService {
         addChange(changes, "limits.maxRequestBytes", a.getLimits().getMaxRequestBytes(), b.getLimits().getMaxRequestBytes());
         addChange(changes, "limits.maxResponseBytes", a.getLimits().getMaxResponseBytes(), b.getLimits().getMaxResponseBytes());
         addChange(changes, "limits.largeResponseBytes", a.getLimits().getLargeResponseBytes(), b.getLimits().getLargeResponseBytes());
+        addChange(changes, "analysis.hotKey", summarizeHotKey(a), summarizeHotKey(b));
         addChange(changes, "governance", summarizeGovernance(a), summarizeGovernance(b));
         return new ConfigDiff(fromVersionId, toVersionId, changes);
     }
@@ -194,6 +195,7 @@ public class ConfigService {
                 || config.getLimits().getLargeResponseBytes() < 0) {
             throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
         }
+        validateAnalysis(config.getAnalysis());
         for (ProxyConfig.RouteRule rule : config.getRouting().getRules()) {
             if (!clusterNames.contains(rule.getCluster())) {
                 throw new IllegalArgumentException("routing rule " + rule.getName() + " references unknown cluster");
@@ -208,6 +210,18 @@ public class ConfigService {
             }
         }
         validateGovernance(config.getGovernance());
+    }
+
+    private static void validateAnalysis(ProxyConfig.Analysis analysis) {
+        ProxyConfig.HotKey hotKey = analysis.getHotKey();
+        int windowMillis = hotKey.getWindowSeconds() * 1000;
+        if (hotKey.getWindowSeconds() <= 0
+                || hotKey.getBucketMillis() <= 0
+                || hotKey.getMaxTrackedKeys() <= 0
+                || hotKey.getMetricsTopN() <= 0
+                || windowMillis % hotKey.getBucketMillis() != 0) {
+            throw new IllegalArgumentException("analysis.hotKey windowSeconds, bucketMillis, maxTrackedKeys and metricsTopN must be positive and window must be divisible by bucket");
+        }
     }
 
     private static void validateGovernance(ProxyConfig.Governance governance) {
@@ -312,6 +326,15 @@ public class ConfigService {
                 .toString();
     }
 
+    private static String summarizeHotKey(ProxyConfig config) {
+        ProxyConfig.HotKey hotKey = config.getAnalysis().getHotKey();
+        return hotKey.isEnabled()
+                + ":" + hotKey.getWindowSeconds()
+                + ":" + hotKey.getBucketMillis()
+                + ":" + hotKey.getMaxTrackedKeys()
+                + ":" + hotKey.getMetricsTopN();
+    }
+
     private static String summarizeGovernance(ProxyConfig config) {
         return config.getGovernance().isEnabled()
                 + ":" + config.getGovernance().isRequireAuth()
@@ -372,6 +395,15 @@ public class ConfigService {
         copy.getLimits().setMaxRequestBytes(source.getLimits().getMaxRequestBytes());
         copy.getLimits().setMaxResponseBytes(source.getLimits().getMaxResponseBytes());
         copy.getLimits().setLargeResponseBytes(source.getLimits().getLargeResponseBytes());
+        ProxyConfig.Analysis analysis = new ProxyConfig.Analysis();
+        ProxyConfig.HotKey hotKey = new ProxyConfig.HotKey();
+        hotKey.setEnabled(source.getAnalysis().getHotKey().isEnabled());
+        hotKey.setWindowSeconds(source.getAnalysis().getHotKey().getWindowSeconds());
+        hotKey.setBucketMillis(source.getAnalysis().getHotKey().getBucketMillis());
+        hotKey.setMaxTrackedKeys(source.getAnalysis().getHotKey().getMaxTrackedKeys());
+        hotKey.setMetricsTopN(source.getAnalysis().getHotKey().getMetricsTopN());
+        analysis.setHotKey(hotKey);
+        copy.setAnalysis(analysis);
         copy.setGovernance(copyGovernance(source.getGovernance()));
         return copy;
     }

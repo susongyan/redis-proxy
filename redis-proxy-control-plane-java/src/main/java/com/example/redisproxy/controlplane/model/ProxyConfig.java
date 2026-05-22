@@ -15,6 +15,7 @@ public class ProxyConfig {
     @Valid private Backends backends = new Backends();
     @Valid private Routing routing = new Routing();
     @Valid private Limits limits = new Limits();
+    @Valid private Analysis analysis = new Analysis();
     @Valid private Governance governance = new Governance();
 
     public Server getServer() { return server; }
@@ -29,6 +30,8 @@ public class ProxyConfig {
     public void setRouting(Routing routing) { this.routing = routing; }
     public Limits getLimits() { return limits; }
     public void setLimits(Limits limits) { this.limits = limits; }
+    public Analysis getAnalysis() { return analysis; }
+    public void setAnalysis(Analysis analysis) { this.analysis = analysis; }
     public Governance getGovernance() { return governance; }
     public void setGovernance(Governance governance) { this.governance = governance; }
 
@@ -123,6 +126,30 @@ public class ProxyConfig {
         public void setMaxResponseBytes(int maxResponseBytes) { this.maxResponseBytes = maxResponseBytes; }
         public int getLargeResponseBytes() { return largeResponseBytes; }
         public void setLargeResponseBytes(int largeResponseBytes) { this.largeResponseBytes = largeResponseBytes; }
+    }
+
+    public static class Analysis {
+        @Valid private HotKey hotKey = new HotKey();
+        public HotKey getHotKey() { return hotKey; }
+        public void setHotKey(HotKey hotKey) { this.hotKey = hotKey; }
+    }
+
+    public static class HotKey {
+        private boolean enabled = true;
+        private int windowSeconds = 60;
+        private int bucketMillis = 1000;
+        private int maxTrackedKeys = 10_000;
+        private int metricsTopN = 20;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
+        public int getBucketMillis() { return bucketMillis; }
+        public void setBucketMillis(int bucketMillis) { this.bucketMillis = bucketMillis; }
+        public int getMaxTrackedKeys() { return maxTrackedKeys; }
+        public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
+        public int getMetricsTopN() { return metricsTopN; }
+        public void setMetricsTopN(int metricsTopN) { this.metricsTopN = metricsTopN; }
     }
 
     public static class Governance {

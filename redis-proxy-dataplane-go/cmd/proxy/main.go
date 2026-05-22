@@ -38,7 +38,7 @@ func main() {
 
 	reg := metrics.NewRegistry()
 	reg.LargeResponseThreshold.Set(float64(cfg.Limits.LargeResponseBytes))
-	hotKeys := analysis.NewHotKeyTracker(reg)
+	hotKeys := analysis.NewHotKeyTracker(reg, cfg.Analysis.HotKey)
 	manager, err := router.NewManager(cfg)
 	if err != nil {
 		log.Fatal("init route manager", zap.Error(err))
@@ -53,7 +53,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	triggerRefresh := startClusterSlotRefreshLoop(ctx, cfg, manager, pools, reg, log)
-	startControlPlanePolling(ctx, cfg, manager, pools, reg, log)
+	startControlPlanePolling(ctx, cfg, manager, pools, reg, log, hotKeys)
 
 	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, manager, pools, reg, hotKeys)
 	go func() {
@@ -170,7 +170,7 @@ func clusterDegraded(rt *router.Manager, pools *backend.Pools) bool {
 	return false
 }
 
-func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) {
+func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker) {
 	if !cfg.ControlPlane.Enabled {
 		return
 	}
@@ -192,7 +192,7 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 			if ctx.Err() != nil {
 				return
 			}
-			retry := watchControlPlane(ctx, client, cfg.ControlPlane.URL, watchTimeout, requestSlack, manager, pools, reg, log)
+			retry := watchControlPlane(ctx, client, cfg.ControlPlane.URL, watchTimeout, requestSlack, manager, pools, reg, log, hotKeys)
 			if retry {
 				select {
 				case <-ctx.Done():
@@ -204,7 +204,7 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 	}()
 }
 
-func watchControlPlane(ctx context.Context, client *http.Client, baseURL string, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) bool {
+func watchControlPlane(ctx context.Context, client *http.Client, baseURL string, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker) bool {
 	watchURL, err := controlPlaneWatchURL(baseURL, manager.CurrentEpoch(), watchTimeout)
 	if err != nil {
 		reg.RouteSnapshotUpdates.WithLabelValues("error").Inc()
@@ -253,6 +253,8 @@ func watchControlPlane(ctx context.Context, client *http.Client, baseURL string,
 	}
 	reg.RouteSnapshotUpdates.WithLabelValues("success").Inc()
 	reg.RouteEpoch.Set(float64(manager.CurrentEpoch()))
+	reg.LargeResponseThreshold.Set(float64(manager.Limits().LargeResponseBytes))
+	hotKeys.Configure(next.Analysis.HotKey)
 	reg.RouteSnapshotTime.Set(float64(time.Now().Unix()))
 	return false
 }

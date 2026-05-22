@@ -17,6 +17,7 @@ type Config struct {
 	Routing      RoutingConfig      `yaml:"routing" json:"routing"`
 	Limits       LimitsConfig       `yaml:"limits" json:"limits"`
 	ControlPlane ControlPlaneConfig `yaml:"controlPlane" json:"controlPlane"`
+	Analysis     AnalysisConfig     `yaml:"analysis" json:"analysis"`
 	Governance   GovernanceConfig   `yaml:"governance" json:"governance"`
 }
 
@@ -63,6 +64,18 @@ type LimitsConfig struct {
 	MaxRequestBytes    int `yaml:"maxRequestBytes" json:"maxRequestBytes"`
 	MaxResponseBytes   int `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 	LargeResponseBytes int `yaml:"largeResponseBytes" json:"largeResponseBytes"`
+}
+
+type AnalysisConfig struct {
+	HotKey HotKeyAnalysisConfig `yaml:"hotKey" json:"hotKey"`
+}
+
+type HotKeyAnalysisConfig struct {
+	Enabled        *bool `yaml:"enabled" json:"enabled"`
+	WindowSeconds  int   `yaml:"windowSeconds" json:"windowSeconds"`
+	BucketMillis   int   `yaml:"bucketMillis" json:"bucketMillis"`
+	MaxTrackedKeys int   `yaml:"maxTrackedKeys" json:"maxTrackedKeys"`
+	MetricsTopN    int   `yaml:"metricsTopN" json:"metricsTopN"`
 }
 
 type ControlPlaneConfig struct {
@@ -152,6 +165,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Limits.LargeResponseBytes == 0 {
 		cfg.Limits.LargeResponseBytes = 1024 * 1024
 	}
+	applyAnalysisDefaults(&cfg.Analysis)
 	if cfg.ControlPlane.PollIntervalSeconds == 0 {
 		cfg.ControlPlane.PollIntervalSeconds = 5
 	}
@@ -215,6 +229,9 @@ func (c *Config) Validate() error {
 	if c.Limits.MaxPipelineDepth <= 0 || c.Limits.MaxRequestBytes <= 0 || c.Limits.MaxResponseBytes <= 0 || c.Limits.LargeResponseBytes < 0 {
 		return errors.New("limits must be positive and largeResponseBytes must be >= 0")
 	}
+	if err := c.validateAnalysis(); err != nil {
+		return err
+	}
 	if len(c.Backends.Clusters) == 0 {
 		return errors.New("at least one backend cluster is required")
 	}
@@ -250,6 +267,43 @@ func (c *Config) Validate() error {
 	}
 	if err := c.validateGovernance(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func applyAnalysisDefaults(analysis *AnalysisConfig) {
+	if analysis.HotKey.Enabled == nil {
+		enabled := true
+		analysis.HotKey.Enabled = &enabled
+	}
+	if analysis.HotKey.WindowSeconds == 0 {
+		analysis.HotKey.WindowSeconds = 60
+	}
+	if analysis.HotKey.BucketMillis == 0 {
+		analysis.HotKey.BucketMillis = 1000
+	}
+	if analysis.HotKey.MaxTrackedKeys == 0 {
+		analysis.HotKey.MaxTrackedKeys = 10000
+	}
+	if analysis.HotKey.MetricsTopN == 0 {
+		analysis.HotKey.MetricsTopN = 20
+	}
+}
+
+func (h HotKeyAnalysisConfig) IsEnabled() bool {
+	return h.Enabled == nil || *h.Enabled
+}
+
+func (c *Config) validateAnalysis() error {
+	windowMillis := c.Analysis.HotKey.WindowSeconds * 1000
+	if c.Analysis.HotKey.WindowSeconds <= 0 ||
+		c.Analysis.HotKey.BucketMillis <= 0 ||
+		c.Analysis.HotKey.MaxTrackedKeys <= 0 ||
+		c.Analysis.HotKey.MetricsTopN <= 0 {
+		return errors.New("analysis.hotKey windowSeconds, bucketMillis, maxTrackedKeys and metricsTopN must be > 0")
+	}
+	if windowMillis%c.Analysis.HotKey.BucketMillis != 0 {
+		return errors.New("analysis.hotKey windowSeconds must be divisible by bucketMillis")
 	}
 	return nil
 }

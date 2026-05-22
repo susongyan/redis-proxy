@@ -323,7 +323,8 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 func (s *Server) observeResponseSize(command string, size int) {
 	normalized := strings.ToUpper(command)
 	s.metrics.ResponseBytes.WithLabelValues(normalized).Observe(float64(size))
-	if s.cfg.Limits.LargeResponseBytes > 0 && size >= s.cfg.Limits.LargeResponseBytes {
+	threshold := s.router.Limits().LargeResponseBytes
+	if threshold > 0 && size >= threshold {
 		s.metrics.LargeResponses.WithLabelValues(normalized).Inc()
 	}
 }

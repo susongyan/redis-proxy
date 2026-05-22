@@ -101,6 +101,7 @@ class RouteResolverTest {
         gray.setNodes(List.of("127.0.0.1:6380"));
         next.getBackends().setClusters(List.of(next.getBackends().getClusters().getFirst(), gray));
         next.getRouting().setRouteEpoch(2);
+        next.getLimits().setLargeResponseBytes(2048);
         ProxyProperties.RouteRule rule = new ProxyProperties.RouteRule();
         rule.setName("gray-user");
         rule.setCluster("redis-b");
@@ -112,6 +113,7 @@ class RouteResolverTest {
         assertThat(result.applied()).isTrue();
         assertThat(resolver.currentEpoch()).isEqualTo(2);
         assertThat(resolver.routeDecision(request("GET", "user:1")).cluster()).isEqualTo("redis-b");
+        assertThat(resolver.limits().getLargeResponseBytes()).isEqualTo(2048);
         verify(backendPool).ensureAll(List.of("127.0.0.1:6380"));
     }
 
