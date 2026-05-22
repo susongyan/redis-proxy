@@ -329,6 +329,13 @@ REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down
 ./scripts/e2e-governance.sh java
 ```
 
+执行动态观测配置 E2E：
+
+```bash
+./scripts/e2e-observability-config.sh go
+./scripts/e2e-observability-config.sh java
+```
+
 执行 benchmark：
 
 ```bash
@@ -550,11 +557,13 @@ Slot cache 刷新策略：
 9. 补齐治理与限流可观测性：配置限额、当前连接/inflight、限流拒绝、key rule 决策和滑动窗口用量。
 10. 支持本地进程级热 key TopK 轻量采样，基于 60s 滑动窗口，提供 debug 查询和低基数 TopK 指标。
 11. 支持大 response 软阈值观测，记录响应大小分布和超过阈值的命中次数。
+12. `largeResponseBytes`、热 key 窗口、容量和 metrics TopN 已配置化，并随控制面 route snapshot 动态生效。
+13. 已固化 `scripts/e2e-observability-config.sh`，覆盖 Go / Java 动态观测配置切换。
 
 待完成：
 
 1. pipeline、请求大小治理指标联动。
-2. 大 response 阈值配置热更新，以及热 key 窗口/容量参数配置化。
+2. 大 key 分析 MVP：按 namespace / command / key 做本地 TopN 归因，debug 暴露，metrics 控制低基数。
 3. 治理审计持久化、token 加密存储和密钥管理接入。
 
 第四阶段：控制面平台化

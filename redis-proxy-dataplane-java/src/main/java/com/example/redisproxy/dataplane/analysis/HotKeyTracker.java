@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -35,6 +36,7 @@ public class HotKeyTracker {
     private long bucketMillis = DEFAULT_BUCKET_MILLIS;
     private int bucketCount = (int) (DEFAULT_WINDOW_MILLIS / DEFAULT_BUCKET_MILLIS);
 
+    @Autowired
     public HotKeyTracker(MeterRegistry registry, ProxyProperties properties) {
         this.registry = registry;
         Gauge.builder("redis.proxy.hot.key.tracked.keys", trackedKeys, AtomicInteger::get).register(registry);
