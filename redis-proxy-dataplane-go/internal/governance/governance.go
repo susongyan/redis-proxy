@@ -40,13 +40,11 @@ func Authenticate(cfg config.GovernanceConfig, req protocol.Request) AuthResult 
 	}
 	namespace := string(req.Args[1])
 	token := string(req.Args[2])
-	for _, candidate := range cfg.Namespaces {
-		if candidate.Name == namespace {
-			if candidate.Token == token {
-				return AuthResult{Allowed: true, Namespace: namespace, Result: "success", Response: []byte("+OK\r\n")}
-			}
-			return AuthResult{Allowed: false, Namespace: namespace, Result: "invalid_token", Response: []byte("-ERR invalid namespace credentials\r\n")}
+	if candidate, ok := Namespace(cfg, namespace); ok {
+		if candidate.Token == token {
+			return AuthResult{Allowed: true, Namespace: namespace, Result: "success", Response: []byte("+OK\r\n")}
 		}
+		return AuthResult{Allowed: false, Namespace: namespace, Result: "invalid_token", Response: []byte("-ERR invalid namespace credentials\r\n")}
 	}
 	return AuthResult{Allowed: false, Namespace: namespace, Result: "unknown_namespace", Response: []byte("-ERR invalid namespace credentials\r\n")}
 }
@@ -160,12 +158,7 @@ func findNamespace(cfg config.GovernanceConfig, name string) (config.NamespaceCo
 }
 
 func Namespace(cfg config.GovernanceConfig, name string) (config.NamespaceConfig, bool) {
-	for _, namespace := range cfg.Namespaces {
-		if namespace.Name == name {
-			return namespace, true
-		}
-	}
-	return config.NamespaceConfig{}, false
+	return cfg.NamespaceByName(name)
 }
 
 func commandSet(commands []string) map[string]bool {

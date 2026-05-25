@@ -115,6 +115,7 @@ type GovernanceConfig struct {
 	KeyLimitBucketMillis int                 `yaml:"keyLimitBucketMillis" json:"keyLimitBucketMillis"`
 	CommandPolicy        CommandPolicyConfig `yaml:"commandPolicy" json:"commandPolicy"`
 	Namespaces           []NamespaceConfig   `yaml:"namespaces" json:"namespaces"`
+	namespacesByName     map[string]NamespaceConfig
 }
 
 type CommandPolicyConfig struct {
@@ -218,6 +219,7 @@ func applyDefaults(cfg *Config) {
 		normalizeCommands(&cfg.Governance.Namespaces[i].DeniedCommands)
 		normalizeCommands(&cfg.Governance.Namespaces[i].WarnOnlyCommands)
 	}
+	cfg.Governance.BuildIndex()
 }
 
 func (c *Config) Validate() error {
@@ -461,7 +463,31 @@ func (c *Config) validateGovernance() error {
 			return fmt.Errorf("governance commandPolicy has invalid command %q", command)
 		}
 	}
+	c.Governance.BuildIndex()
 	return nil
+}
+
+func (g *GovernanceConfig) BuildIndex() {
+	index := make(map[string]NamespaceConfig, len(g.Namespaces))
+	for _, namespace := range g.Namespaces {
+		if namespace.Name != "" {
+			index[namespace.Name] = namespace
+		}
+	}
+	g.namespacesByName = index
+}
+
+func (g GovernanceConfig) NamespaceByName(name string) (NamespaceConfig, bool) {
+	if g.namespacesByName != nil {
+		namespace, ok := g.namespacesByName[name]
+		return namespace, ok
+	}
+	for _, namespace := range g.Namespaces {
+		if namespace.Name == name {
+			return namespace, true
+		}
+	}
+	return NamespaceConfig{}, false
 }
 
 func normalizeCommands(commands *[]string) {

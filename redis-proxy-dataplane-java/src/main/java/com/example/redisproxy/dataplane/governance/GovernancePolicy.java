@@ -28,13 +28,12 @@ public final class GovernancePolicy {
         }
         String namespace = new String(request.args().get(1), StandardCharsets.UTF_8);
         String token = new String(request.args().get(2), StandardCharsets.UTF_8);
-        for (ProxyProperties.Namespace candidate : governance.getNamespaces()) {
-            if (candidate.getName().equals(namespace)) {
-                if (candidate.getToken().equals(token)) {
-                    return new AuthResult(true, namespace, "+OK\r\n", "success");
-                }
-                return new AuthResult(false, namespace, "-ERR invalid namespace credentials\r\n", "invalid_token");
+        ProxyProperties.Namespace candidate = governance.namespace(namespace);
+        if (candidate != null) {
+            if (candidate.getToken().equals(token)) {
+                return new AuthResult(true, namespace, "+OK\r\n", "success");
             }
+            return new AuthResult(false, namespace, "-ERR invalid namespace credentials\r\n", "invalid_token");
         }
         return new AuthResult(false, namespace, "-ERR invalid namespace credentials\r\n", "unknown_namespace");
     }
@@ -138,12 +137,7 @@ public final class GovernancePolicy {
     }
 
     public static ProxyProperties.Namespace namespaceConfig(ProxyProperties.Governance governance, String name) {
-        for (ProxyProperties.Namespace namespace : governance.getNamespaces()) {
-            if (namespace.getName().equals(name)) {
-                return namespace;
-            }
-        }
-        return null;
+        return governance.namespace(name);
     }
 
     private static boolean contains(List<String> commands, String command) {

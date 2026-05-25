@@ -6,25 +6,25 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.stereotype.Component;
 
 @Component
 public class KeyGovernanceLimiter {
     private final MeterRegistry registry;
-    private final Map<String, SlidingWindow> windows = new HashMap<>();
-    private final Map<String, AtomicInteger> limitConfigGauges = new HashMap<>();
-    private final Map<String, AtomicInteger> limitWindowUsageGauges = new HashMap<>();
+    private final Map<String, AtomicSlidingWindow> windows = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> limitConfigGauges = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> limitWindowUsageGauges = new ConcurrentHashMap<>();
     private Clock clock = Clock.systemUTC();
 
     public KeyGovernanceLimiter(MeterRegistry registry) {
         this.registry = registry;
     }
 
-    public synchronized Decision evaluate(ProxyProperties.Governance governance, ProxyProperties.Namespace namespace, RespRequest request) {
+    public Decision evaluate(ProxyProperties.Governance governance, ProxyProperties.Namespace namespace, RespRequest request) {
         if (!governance.isEnabled() || namespace == null || !hasKeyGovernance(namespace)) {
             return Decision.allow();
         }
@@ -72,28 +72,19 @@ public class KeyGovernanceLimiter {
             bucketCount = 1;
         }
         long nowMillis = clock.millis();
-        long currentBucket = nowMillis / governance.getKeyLimitBucketMillis();
         String key = namespace + "\u0000" + rule.getName();
-        SlidingWindow window = windows.get(key);
-        if (window == null || window.bucketMillis != governance.getKeyLimitBucketMillis() || window.buckets.length != bucketCount) {
-            window = new SlidingWindow(governance.getKeyLimitBucketMillis(), bucketCount);
-            windows.put(key, window);
-        }
-        int total = 0;
-        for (Bucket bucket : window.buckets) {
-            if (currentBucket - bucket.index < bucketCount) {
-                total += bucket.count;
+        int finalBucketCount = bucketCount;
+        AtomicSlidingWindow window = windows.compute(key, (ignored, existing) -> {
+            if (existing == null
+                    || existing.bucketMillis != governance.getKeyLimitBucketMillis()
+                    || existing.bucketCount != finalBucketCount
+                    || !existing.canRepresent(nowMillis)) {
+                return new AtomicSlidingWindow(governance.getKeyLimitBucketMillis(), finalBucketCount, nowMillis);
             }
-        }
-        if (total >= rule.getMaxQps()) {
-            return new LimitResult(false, total);
-        }
-        int slot = (int) (currentBucket % bucketCount);
-        if (window.buckets[slot].index != currentBucket) {
-            window.buckets[slot] = new Bucket(currentBucket, 0);
-        }
-        window.buckets[slot].count++;
-        return new LimitResult(true, total + 1);
+            return existing;
+        });
+        AtomicSlidingWindow.Result result = window.allow(nowMillis, rule.getMaxQps());
+        return new LimitResult(result.allowed(), result.total());
     }
 
     private void observeDecision(String namespace, String rule, String command, String result, String reason) {
@@ -167,26 +158,4 @@ public class KeyGovernanceLimiter {
     private record LimitResult(boolean allowed, int total) {
     }
 
-    private static final class SlidingWindow {
-        private final int bucketMillis;
-        private final Bucket[] buckets;
-
-        private SlidingWindow(int bucketMillis, int bucketCount) {
-            this.bucketMillis = bucketMillis;
-            this.buckets = new Bucket[bucketCount];
-            for (int i = 0; i < bucketCount; i++) {
-                this.buckets[i] = new Bucket(Long.MIN_VALUE, 0);
-            }
-        }
-    }
-
-    private static final class Bucket {
-        private final long index;
-        private int count;
-
-        private Bucket(long index, int count) {
-            this.index = index;
-            this.count = count;
-        }
-    }
 }

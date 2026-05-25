@@ -2,7 +2,9 @@ package com.example.redisproxy.dataplane.config;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.Locale;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -320,6 +322,7 @@ public class ProxyProperties {
         private int keyLimitBucketMillis = 100;
         private CommandPolicy commandPolicy = new CommandPolicy();
         private List<Namespace> namespaces = new ArrayList<>();
+        private volatile Map<String, Namespace> namespacesByName = Map.of();
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public boolean isRequireAuth() { return requireAuth; }
@@ -331,7 +334,22 @@ public class ProxyProperties {
         public CommandPolicy getCommandPolicy() { return commandPolicy; }
         public void setCommandPolicy(CommandPolicy commandPolicy) { this.commandPolicy = commandPolicy; }
         public List<Namespace> getNamespaces() { return namespaces; }
-        public void setNamespaces(List<Namespace> namespaces) { this.namespaces = namespaces; }
+        public void setNamespaces(List<Namespace> namespaces) {
+            this.namespaces = namespaces == null ? new ArrayList<>() : namespaces;
+            rebuildNamespaceIndex();
+        }
+
+        public Namespace namespace(String name) {
+            if (name == null || name.isBlank()) {
+                return null;
+            }
+            Namespace namespace = namespacesByName.get(name);
+            if (namespace != null || namespacesByName.size() == namespaces.size()) {
+                return namespace;
+            }
+            rebuildNamespaceIndex();
+            return namespacesByName.get(name);
+        }
 
         void applyDefaults() {
             if (enabled && !requireAuth) {
@@ -353,6 +371,7 @@ public class ProxyProperties {
             for (Namespace namespace : namespaces) {
                 namespace.normalize();
             }
+            rebuildNamespaceIndex();
         }
 
         void validate() {
@@ -373,6 +392,17 @@ public class ProxyProperties {
                 }
                 namespace.validate();
             }
+            rebuildNamespaceIndex();
+        }
+
+        private void rebuildNamespaceIndex() {
+            Map<String, Namespace> next = new LinkedHashMap<>();
+            for (Namespace namespace : namespaces) {
+                if (namespace.getName() != null && !namespace.getName().isBlank()) {
+                    next.put(namespace.getName(), namespace);
+                }
+            }
+            namespacesByName = Map.copyOf(next);
         }
     }
 

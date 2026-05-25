@@ -4,90 +4,95 @@ import com.example.redisproxy.dataplane.config.ProxyProperties;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import java.time.Clock;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.stereotype.Component;
 
 @Component
 public class NamespaceLimiter {
     private final MeterRegistry registry;
-    private final Map<String, Integer> connections = new HashMap<>();
-    private final Map<String, Integer> inflight = new HashMap<>();
-    private final Map<String, QpsWindow> qpsWindows = new HashMap<>();
-    private final Map<String, AtomicInteger> connectionGauges = new HashMap<>();
-    private final Map<String, AtomicInteger> inflightGauges = new HashMap<>();
-    private final Map<String, AtomicInteger> limitConfigGauges = new HashMap<>();
+    private final Map<String, AtomicInteger> connections = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> inflight = new ConcurrentHashMap<>();
+    private final Map<String, AtomicSlidingWindow> qpsWindows = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> connectionGauges = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> inflightGauges = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> limitConfigGauges = new ConcurrentHashMap<>();
     private Clock clock = Clock.systemUTC();
 
     public NamespaceLimiter(MeterRegistry registry) {
         this.registry = registry;
     }
 
-    public synchronized LimitResult bind(String current, ProxyProperties.Namespace next) {
+    public LimitResult bind(String current, ProxyProperties.Namespace next) {
         if (next == null || next.getName() == null || next.getName().isBlank() || next.getName().equals(current)) {
             return LimitResult.allow();
         }
         String namespace = next.getName();
         observeLimits(next);
-        if (next.getLimits().getMaxConnections() > 0 && connections.getOrDefault(namespace, 0) >= next.getLimits().getMaxConnections()) {
+        AtomicInteger counter = counter(connections, namespace);
+        if (!tryAcquire(counter, next.getLimits().getMaxConnections())) {
             return LimitResult.rejected("connection_limit");
         }
-        if (current != null && !current.isBlank() && connections.getOrDefault(current, 0) > 0) {
-            connections.put(current, connections.get(current) - 1);
-            gauge(connectionGauges, "redis.proxy.namespace.connections", current).set(connections.get(current));
+        AtomicInteger previous = current == null || current.isBlank() ? null : connections.get(current);
+        if (previous != null && previous.get() > 0) {
+            int value = decrement(previous);
+            gauge(connectionGauges, "redis.proxy.namespace.connections", current).set(value);
         }
-        connections.put(namespace, connections.getOrDefault(namespace, 0) + 1);
-        gauge(connectionGauges, "redis.proxy.namespace.connections", namespace).set(connections.get(namespace));
+        gauge(connectionGauges, "redis.proxy.namespace.connections", namespace).set(counter.get());
         return LimitResult.allow();
     }
 
-    public synchronized void unbind(String namespace) {
+    public void unbind(String namespace) {
         if (namespace == null || namespace.isBlank()) {
             return;
         }
-        if (connections.getOrDefault(namespace, 0) > 0) {
-            connections.put(namespace, connections.get(namespace) - 1);
+        AtomicInteger counter = connections.get(namespace);
+        if (counter != null) {
+            gauge(connectionGauges, "redis.proxy.namespace.connections", namespace).set(decrement(counter));
+        } else {
+            gauge(connectionGauges, "redis.proxy.namespace.connections", namespace).set(0);
         }
-        gauge(connectionGauges, "redis.proxy.namespace.connections", namespace).set(connections.getOrDefault(namespace, 0));
     }
 
-    public synchronized LimitResult allowRequest(ProxyProperties.Namespace namespace) {
+    public LimitResult allowRequest(ProxyProperties.Namespace namespace) {
         if (namespace == null || namespace.getName() == null || namespace.getName().isBlank()) {
             return LimitResult.allow();
         }
         String name = namespace.getName();
         ProxyProperties.NamespaceLimits limits = namespace.getLimits();
         observeLimits(namespace);
-        long second = clock.millis() / 1000;
         if (limits.getMaxQps() > 0) {
-            QpsWindow window = qpsWindows.get(name);
-            if (window == null || window.second != second) {
-                window = new QpsWindow(second, 0);
-            }
-            if (window.count >= limits.getMaxQps()) {
-                qpsWindows.put(name, window);
+            long nowMillis = clock.millis();
+            AtomicSlidingWindow window = qpsWindows.compute(name, (ignored, existing) -> {
+                if (existing == null || !existing.canRepresent(nowMillis)) {
+                    return new AtomicSlidingWindow(1000, 1, nowMillis);
+                }
+                return existing;
+            });
+            if (!window.allow(nowMillis, limits.getMaxQps()).allowed()) {
                 return LimitResult.rejected("qps_limit");
             }
-            qpsWindows.put(name, new QpsWindow(second, window.count + 1));
         }
-        if (limits.getMaxInflight() > 0 && inflight.getOrDefault(name, 0) >= limits.getMaxInflight()) {
+        AtomicInteger inflightCounter = counter(inflight, name);
+        if (!tryAcquire(inflightCounter, limits.getMaxInflight())) {
             return LimitResult.rejected("inflight_limit");
         }
-        inflight.put(name, inflight.getOrDefault(name, 0) + 1);
-        gauge(inflightGauges, "redis.proxy.namespace.inflight", name).set(inflight.get(name));
+        gauge(inflightGauges, "redis.proxy.namespace.inflight", name).set(inflightCounter.get());
         return LimitResult.allow();
     }
 
-    public synchronized void finishRequest(String namespace) {
+    public void finishRequest(String namespace) {
         if (namespace == null || namespace.isBlank()) {
             return;
         }
-        if (inflight.getOrDefault(namespace, 0) > 0) {
-            inflight.put(namespace, inflight.get(namespace) - 1);
+        AtomicInteger counter = inflight.get(namespace);
+        if (counter != null) {
+            gauge(inflightGauges, "redis.proxy.namespace.inflight", namespace).set(decrement(counter));
+        } else {
+            gauge(inflightGauges, "redis.proxy.namespace.inflight", namespace).set(0);
         }
-        gauge(inflightGauges, "redis.proxy.namespace.inflight", namespace).set(inflight.getOrDefault(namespace, 0));
     }
 
     void setClock(Clock clock) {
@@ -97,6 +102,26 @@ public class NamespaceLimiter {
     private AtomicInteger gauge(Map<String, AtomicInteger> gauges, String name, String namespace) {
         return gauges.computeIfAbsent(namespace, key ->
                 registry.gauge(name, List.of(Tag.of("namespace", key)), new AtomicInteger()));
+    }
+
+    private AtomicInteger counter(Map<String, AtomicInteger> counters, String namespace) {
+        return counters.computeIfAbsent(namespace, ignored -> new AtomicInteger());
+    }
+
+    private static boolean tryAcquire(AtomicInteger counter, int limit) {
+        while (true) {
+            int current = counter.get();
+            if (limit > 0 && current >= limit) {
+                return false;
+            }
+            if (counter.compareAndSet(current, current + 1)) {
+                return true;
+            }
+        }
+    }
+
+    private static int decrement(AtomicInteger counter) {
+        return counter.updateAndGet(value -> Math.max(0, value - 1));
     }
 
     private void observeLimits(ProxyProperties.Namespace namespace) {
@@ -122,6 +147,4 @@ public class NamespaceLimiter {
         }
     }
 
-    private record QpsWindow(long second, int count) {
-    }
 }

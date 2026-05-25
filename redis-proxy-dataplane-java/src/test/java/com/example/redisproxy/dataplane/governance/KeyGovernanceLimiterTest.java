@@ -10,8 +10,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
 
 class KeyGovernanceLimiterTest {
@@ -87,6 +91,33 @@ class KeyGovernanceLimiterTest {
         assertThat(registry.get("redis.proxy.key.governance.decisions").tag("namespace", "app-a").tag("rule", "hot").tag("command", "GET").tag("result", "reject").tag("reason", "qps_limit").counter().count()).isEqualTo(1.0);
     }
 
+    @Test
+    void doesNotOverAllowKeyRuleUnderConcurrency() throws Exception {
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
+        limiter.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
+        ProxyProperties.Governance governance = governance();
+        ProxyProperties.Namespace namespace = namespace();
+        namespace.getKeyRules().get(1).setMaxQps(4);
+
+        int allowed = runConcurrent(32, () -> limiter.evaluate(governance, namespace, request("GET", "app-a:hot:1")).allowed() ? 1 : 0);
+
+        assertThat(allowed).isEqualTo(4);
+    }
+
+    @Test
+    void rebuildsWindowWhenBucketConfigChanges() {
+        KeyGovernanceLimiter limiter = new KeyGovernanceLimiter(new SimpleMeterRegistry());
+        limiter.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
+        ProxyProperties.Governance governance = governance();
+        ProxyProperties.Namespace namespace = namespace();
+
+        assertThat(limiter.evaluate(governance, namespace, request("GET", "app-a:hot:1")).allowed()).isTrue();
+        assertThat(limiter.evaluate(governance, namespace, request("GET", "app-a:hot:2")).allowed()).isFalse();
+
+        governance.setKeyLimitBucketMillis(200);
+        assertThat(limiter.evaluate(governance, namespace, request("GET", "app-a:hot:3")).allowed()).isTrue();
+    }
+
     private static ProxyProperties.Governance governance() {
         ProxyProperties.Governance governance = new ProxyProperties.Governance();
         governance.setEnabled(true);
@@ -118,5 +149,22 @@ class KeyGovernanceLimiterTest {
         return new RespRequest(
                 Unpooled.EMPTY_BUFFER,
                 Arrays.stream(args).map(arg -> arg.getBytes(StandardCharsets.US_ASCII)).toList());
+    }
+
+    private static int runConcurrent(int tasks, Callable<Integer> task) throws Exception {
+        var executor = Executors.newFixedThreadPool(8);
+        try {
+            List<Callable<Integer>> calls = new ArrayList<>();
+            for (int i = 0; i < tasks; i++) {
+                calls.add(task);
+            }
+            int total = 0;
+            for (Future<Integer> future : executor.invokeAll(calls)) {
+                total += future.get();
+            }
+            return total;
+        } finally {
+            executor.shutdownNow();
+        }
     }
 }
