@@ -8,7 +8,7 @@
 - `redis-proxy-dataplane-java`：Java 21 + Netty 数据面，用于和 Go 在同等能力下做尾延迟、GC、内存和吞吐对比。
 - `redis-proxy-control-plane-java`：Java 21 + Spring Boot 控制面，负责配置模型、路由策略、治理规则和后续运维编排。
 
-尾延迟实验工作区说明已独立到 [TAIL_LATENCY_COMPARISON_WORKSPACE.md](TAIL_LATENCY_COMPARISON_WORKSPACE.md)。
+尾延迟实验工作区说明已独立到 [tail-latency-comparison-workspace.md](docs/tail-latency-comparison-workspace.md)。
 
 ## 设计目标
 
@@ -240,6 +240,7 @@ governance:
 - `governance.requireAuth=true` 时，除 `AUTH` / `QUIT` 外的未认证请求返回 `-NOAUTH Authentication required`。
 - namespace 维度支持连接数、秒级 QPS 和 inflight 限制；`0` 表示不限制。
 - key 维度支持精确禁用 `disabledKeys` 和按 `keyPrefix` / `hashTag` 匹配的 `keyRules`；`maxQps` 使用本地滑动窗口计数，默认 `1000ms / 100ms`。
+- 滑动窗口限流算法的实现、过期 bucket 清理逻辑和 ring buffer 对比见 [Sliding Window Limiter 实现说明](docs/sliding-window-limiter.md)。
 - 启用 key 治理时，多 key 命令任意 key 命中禁用或限流都会拒绝整个请求；无法识别 key 位置的命令 fail closed。
 - 治理指标按 Go Prometheus 命名和 Java Micrometer 命名分别暴露，语义保持一致：auth、治理拒绝/告警、namespace 当前连接和 inflight、namespace 配置限额和限流拒绝、key rule 决策、key 限额配置和滑动窗口用量。
 - namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
@@ -484,7 +485,7 @@ REQUESTS=20000 CLIENTS_LIST="50 200" PIPELINE_LIST="1 10 100" TESTS="set,get" ./
 - 区分 sync backend 和 async backend 实现模型。
 - 同时采集 RPS、p50、p95、p99、p999、CPU、RSS、GC、heap/direct memory、backend inflight 和 error rate。
 
-当前 benchmark 详情见 [TAIL_LATENCY_COMPARISON_WORKSPACE.md](TAIL_LATENCY_COMPARISON_WORKSPACE.md)。
+当前 benchmark 详情见 [tail-latency-comparison-workspace.md](docs/tail-latency-comparison-workspace.md)。
 
 ## Redis Backend 异常与 Slot 刷新机制
 
