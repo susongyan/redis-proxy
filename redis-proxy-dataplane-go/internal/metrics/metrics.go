@@ -55,6 +55,12 @@ type Registry struct {
 	LargeKeyTracked        prometheus.Gauge
 	LargeKeyRequestThresh  prometheus.Gauge
 	LargeKeyResponseThresh prometheus.Gauge
+	SlowQueryObserved      *prometheus.CounterVec
+	SlowQueryDropped       *prometheus.CounterVec
+	SlowQueryUnsupported   *prometheus.CounterVec
+	SlowQueryTracked       prometheus.Gauge
+	SlowQueryE2EThresh     prometheus.Gauge
+	SlowQueryBackendThresh prometheus.Gauge
 }
 
 func NewRegistry() *Registry {
@@ -108,6 +114,12 @@ func NewRegistry() *Registry {
 	r.LargeKeyTracked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_key_tracked_keys", Help: "Number of key entries currently tracked by large key analyzer"})
 	r.LargeKeyRequestThresh = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_key_request_threshold_bytes", Help: "Configured large key request threshold in bytes"})
 	r.LargeKeyResponseThresh = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_large_key_response_threshold_bytes", Help: "Configured large key response threshold in bytes"})
+	r.SlowQueryObserved = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_slow_query_observed_total", Help: "Slow query observations by namespace, command and trigger"}, []string{"namespace", "command", "trigger"})
+	r.SlowQueryDropped = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_slow_query_dropped_total", Help: "Slow query observations dropped when tracking capacity is full"}, []string{"namespace", "command"})
+	r.SlowQueryUnsupported = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_slow_query_unsupported_total", Help: "Slow query observations whose command key positions are unsupported"}, []string{"command"})
+	r.SlowQueryTracked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_slow_query_tracked_keys", Help: "Number of key entries currently tracked by slow query analyzer"})
+	r.SlowQueryE2EThresh = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_slow_query_end_to_end_threshold_millis", Help: "Configured slow query end-to-end threshold in milliseconds"})
+	r.SlowQueryBackendThresh = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_slow_query_backend_threshold_millis", Help: "Configured slow query backend threshold in milliseconds"})
 	r.Prom.MustRegister(
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -160,6 +172,12 @@ func NewRegistry() *Registry {
 		r.LargeKeyTracked,
 		r.LargeKeyRequestThresh,
 		r.LargeKeyResponseThresh,
+		r.SlowQueryObserved,
+		r.SlowQueryDropped,
+		r.SlowQueryUnsupported,
+		r.SlowQueryTracked,
+		r.SlowQueryE2EThresh,
+		r.SlowQueryBackendThresh,
 	)
 	return r
 }

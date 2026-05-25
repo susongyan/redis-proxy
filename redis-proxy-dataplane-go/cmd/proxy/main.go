@@ -40,6 +40,7 @@ func main() {
 	reg.LargeResponseThreshold.Set(float64(cfg.Limits.LargeResponseBytes))
 	hotKeys := analysis.NewHotKeyTracker(reg, cfg.Analysis.HotKey)
 	largeKeys := analysis.NewLargeKeyTracker(reg, cfg.Analysis.LargeKey)
+	slowQueries := analysis.NewSlowQueryTracker(reg, cfg.Analysis.SlowQuery)
 	manager, err := router.NewManager(cfg)
 	if err != nil {
 		log.Fatal("init route manager", zap.Error(err))
@@ -54,16 +55,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	triggerRefresh := startClusterSlotRefreshLoop(ctx, cfg, manager, pools, reg, log)
-	startControlPlanePolling(ctx, cfg, manager, pools, reg, log, hotKeys, largeKeys)
+	startControlPlanePolling(ctx, cfg, manager, pools, reg, log, hotKeys, largeKeys, slowQueries)
 
-	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, manager, pools, reg, hotKeys, largeKeys)
+	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, manager, pools, reg, hotKeys, largeKeys, slowQueries)
 	go func() {
 		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("admin server", zap.Error(err))
 		}
 	}()
 
-	server := proxy.NewServer(cfg, manager, pools, reg, log, triggerRefresh, hotKeys, largeKeys)
+	server := proxy.NewServer(cfg, manager, pools, reg, log, triggerRefresh, hotKeys, largeKeys, slowQueries)
 	go func() {
 		if err := server.ListenAndServe(ctx); err != nil {
 			log.Fatal("proxy server", zap.Error(err))
@@ -171,7 +172,7 @@ func clusterDegraded(rt *router.Manager, pools *backend.Pools) bool {
 	return false
 }
 
-func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker) {
+func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) {
 	if !cfg.ControlPlane.Enabled {
 		return
 	}
@@ -193,7 +194,7 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 			if ctx.Err() != nil {
 				return
 			}
-			retry := watchControlPlane(ctx, client, cfg.ControlPlane.URL, watchTimeout, requestSlack, manager, pools, reg, log, hotKeys, largeKeys)
+			retry := watchControlPlane(ctx, client, cfg.ControlPlane.URL, watchTimeout, requestSlack, manager, pools, reg, log, hotKeys, largeKeys, slowQueries)
 			if retry {
 				select {
 				case <-ctx.Done():
@@ -205,7 +206,7 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 	}()
 }
 
-func watchControlPlane(ctx context.Context, client *http.Client, baseURL string, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker) bool {
+func watchControlPlane(ctx context.Context, client *http.Client, baseURL string, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) bool {
 	watchURL, err := controlPlaneWatchURL(baseURL, manager.CurrentEpoch(), watchTimeout)
 	if err != nil {
 		reg.RouteSnapshotUpdates.WithLabelValues("error").Inc()
@@ -257,6 +258,7 @@ func watchControlPlane(ctx context.Context, client *http.Client, baseURL string,
 	reg.LargeResponseThreshold.Set(float64(manager.Limits().LargeResponseBytes))
 	hotKeys.Configure(next.Analysis.HotKey)
 	largeKeys.Configure(next.Analysis.LargeKey)
+	slowQueries.Configure(next.Analysis.SlowQuery)
 	reg.RouteSnapshotTime.Set(float64(time.Now().Unix()))
 	return false
 }

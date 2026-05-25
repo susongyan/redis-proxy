@@ -3,6 +3,7 @@ package com.example.redisproxy.dataplane.netty;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.analysis.HotKeyTracker;
 import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
+import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
 import com.example.redisproxy.dataplane.governance.KeyGovernanceLimiter;
 import com.example.redisproxy.dataplane.governance.NamespaceLimiter;
@@ -35,13 +36,14 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
     private final KeyGovernanceLimiter keyGovernanceLimiter;
     private final HotKeyTracker hotKeyTracker;
     private final LargeKeyTracker largeKeyTracker;
+    private final SlowQueryTracker slowQueryTracker;
     private final MeterRegistry registry;
     private final AtomicInteger activeConnections;
     private final AtomicInteger pendingClientResponses;
     private final Counter moved;
     private final Counter ask;
 
-    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, ClusterSlotRefresher slotRefresher, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
+    public ProxyChannelHandler(RouteResolver routeResolver, BackendPool backendPool, ClusterSlotRefresher slotRefresher, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, MeterRegistry registry, AtomicInteger activeConnections, AtomicInteger pendingClientResponses) {
         this.routeResolver = routeResolver;
         this.backendPool = backendPool;
         this.slotRefresher = slotRefresher;
@@ -49,6 +51,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         this.keyGovernanceLimiter = keyGovernanceLimiter;
         this.hotKeyTracker = hotKeyTracker;
         this.largeKeyTracker = largeKeyTracker;
+        this.slowQueryTracker = slowQueryTracker;
         this.registry = registry;
         this.activeConnections = activeConnections;
         this.pendingClientResponses = pendingClientResponses;
@@ -59,6 +62,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RespRequest request) {
         Timer.Sample sample = Timer.start(registry);
+        long startNanos = System.nanoTime();
         ClientResponseSequencer sequencer = ctx.channel().attr(SEQUENCER).get();
         String command = request.command();
         long sequence = sequencer.nextSequence();
@@ -77,12 +81,12 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
                         registry.counter("redis.proxy.auth", "namespace", auth.namespace(), "result", limit.reason()).increment();
                         registry.counter("redis.proxy.governance.reject", "namespace", auth.namespace(), "command", command, "reason", limit.reason()).increment();
                         registry.counter("redis.proxy.namespace.limit.reject", "namespace", auth.namespace(), "limit", namespaceLimitLabel(limit.reason())).increment();
-                        sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer("-ERR namespace connection limit exceeded\r\n", StandardCharsets.US_ASCII), null, command, sample, null), pending -> flush(ctx, pending));
+                        sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer("-ERR namespace connection limit exceeded\r\n", StandardCharsets.US_ASCII), null, command, sample, null, null, startNanos, 0), pending -> flush(ctx, pending));
                         return;
                     }
                     ctx.channel().attr(NAMESPACE).set(auth.namespace());
                 }
-                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(auth.response(), StandardCharsets.US_ASCII), null, command, sample, null), pending -> flush(ctx, pending));
+                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(auth.response(), StandardCharsets.US_ASCII), null, command, sample, null, null, startNanos, 0), pending -> flush(ctx, pending));
                 return;
             }
             String namespace = ctx.channel().attr(NAMESPACE).get();
@@ -92,7 +96,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             }
             if (!GovernancePolicy.ALLOW.equals(governance.action())) {
                 registry.counter("redis.proxy.governance.reject", "namespace", governance.namespace(), "command", command, "reason", governance.reason()).increment();
-                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(governance.response(), StandardCharsets.US_ASCII), null, command, sample, null), pending -> flush(ctx, pending));
+                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(governance.response(), StandardCharsets.US_ASCII), null, command, sample, null, null, startNanos, 0), pending -> flush(ctx, pending));
                 return;
             }
             var namespaceConfig = GovernancePolicy.namespaceConfig(routeResolver.governance(), namespace == null ? "" : namespace);
@@ -100,7 +104,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             if (!limit.allowed()) {
                 registry.counter("redis.proxy.governance.reject", "namespace", namespace == null ? "" : namespace, "command", command, "reason", limit.reason()).increment();
                 registry.counter("redis.proxy.namespace.limit.reject", "namespace", namespace == null ? "" : namespace, "limit", namespaceLimitLabel(limit.reason())).increment();
-                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer("-ERR request limited by proxy governance\r\n", StandardCharsets.US_ASCII), null, command, sample, null), pending -> flush(ctx, pending));
+                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer("-ERR request limited by proxy governance\r\n", StandardCharsets.US_ASCII), null, command, sample, null, null, startNanos, 0), pending -> flush(ctx, pending));
                 return;
             }
             namespaceAcquired = true;
@@ -110,26 +114,28 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
                 namespaceLimiter.finishRequest(requestNamespace);
                 namespaceAcquired = false;
                 registry.counter("redis.proxy.key.governance.reject", "namespace", requestNamespace, "rule", keyDecision.rule(), "command", command, "reason", keyDecision.reason()).increment();
-                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(keyDecision.response(), StandardCharsets.US_ASCII), null, command, sample, null), pending -> flush(ctx, pending));
+                sequencer.complete(sequence, new PendingResponse(Unpooled.copiedBuffer(keyDecision.response(), StandardCharsets.US_ASCII), null, command, sample, null, null, startNanos, 0), pending -> flush(ctx, pending));
                 return;
             }
             hotKeyTracker.observe(requestNamespace, request);
             LargeKeyTracker.Context largeKeyContext = largeKeyTracker.context(requestNamespace, request);
             largeKeyTracker.observeRequest(largeKeyContext, request.raw().readableBytes());
+            SlowQueryTracker.Context slowQueryContext = slowQueryTracker.context(requestNamespace, request);
             RouteDecision decision = routeResolver.routeDecision(request);
             registry.counter("redis.proxy.route.decisions", "cluster", decision.cluster(), "rule", decision.rule()).increment();
             ByteBuf retryRaw = request.raw().retainedDuplicate();
             String backendNamespace = requestNamespace;
+            long backendStartNanos = System.nanoTime();
             backendPool.doRequest(decision.address(), request.raw(), ctx.channel().id().asLongText().hashCode()).whenComplete((response, error) ->
                     ctx.executor().execute(() -> {
                         namespaceLimiter.finishRequest(backendNamespace);
-                        completeBackendResult(ctx, sequencer, sequence, command, sample, decision, retryRaw, response, error, false, largeKeyContext);
+                        completeBackendResult(ctx, sequencer, sequence, command, sample, startNanos, backendStartNanos, decision, retryRaw, response, error, false, largeKeyContext, slowQueryContext);
                     }));
         } catch (Exception e) {
             if (namespaceAcquired) {
                 namespaceLimiter.finishRequest(requestNamespace);
             }
-            ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(null, e, command, sample, null), pending -> flush(ctx, pending)));
+            ctx.executor().execute(() -> sequencer.complete(sequence, new PendingResponse(null, e, command, sample, null, null, startNanos, 0), pending -> flush(ctx, pending)));
         } finally {
             request.release();
         }
@@ -150,15 +156,15 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         super.channelInactive(ctx);
     }
 
-    private void completeBackendResult(ChannelHandlerContext ctx, ClientResponseSequencer sequencer, long sequence, String command, Timer.Sample sample, RouteDecision decision, ByteBuf retryRaw, ByteBuf response, Throwable error, boolean askRetried, LargeKeyTracker.Context largeKeyContext) {
+    private void completeBackendResult(ChannelHandlerContext ctx, ClientResponseSequencer sequencer, long sequence, String command, Timer.Sample sample, long startNanos, long backendStartNanos, RouteDecision decision, ByteBuf retryRaw, ByteBuf response, Throwable error, boolean askRetried, LargeKeyTracker.Context largeKeyContext, SlowQueryTracker.Context slowQueryContext) {
         if (error != null || !startsWith(response, "-ASK ")) {
             retryRaw.release();
-            sequencer.complete(sequence, new PendingResponse(response, error, command, sample, largeKeyContext), pending -> flush(ctx, pending));
+            sequencer.complete(sequence, new PendingResponse(response, error, command, sample, largeKeyContext, slowQueryContext, startNanos, System.nanoTime() - backendStartNanos), pending -> flush(ctx, pending));
             return;
         }
         if (askRetried) {
             retryRaw.release();
-            sequencer.complete(sequence, new PendingResponse(response, null, command, sample, largeKeyContext), pending -> flush(ctx, pending));
+            sequencer.complete(sequence, new PendingResponse(response, null, command, sample, largeKeyContext, slowQueryContext, startNanos, System.nanoTime() - backendStartNanos), pending -> flush(ctx, pending));
             return;
         }
         ask.increment();
@@ -169,7 +175,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             response.release();
             retryRaw.release();
             registry.counter("redis.proxy.ask.redirect", "result", "error").increment();
-            sequencer.complete(sequence, new PendingResponse(null, e, command, sample, largeKeyContext), pending -> flush(ctx, pending));
+            sequencer.complete(sequence, new PendingResponse(null, e, command, sample, largeKeyContext, slowQueryContext, startNanos, System.nanoTime() - backendStartNanos), pending -> flush(ctx, pending));
             return;
         }
         response.release();
@@ -182,7 +188,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
                     } else {
                         registry.counter("redis.proxy.ask.redirect", "result", "success").increment();
                     }
-                    completeBackendResult(ctx, sequencer, sequence, command, sample, decision, retryRaw, retryResponse, retryError, true, largeKeyContext);
+                    completeBackendResult(ctx, sequencer, sequence, command, sample, startNanos, backendStartNanos, decision, retryRaw, retryResponse, retryError, true, largeKeyContext, slowQueryContext);
                 }));
     }
 
@@ -191,6 +197,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         if (pending.error() != null) {
             registry.counter("redis.proxy.errors", "type", "backend").increment();
             pending.sample().stop(registry.timer("redis.proxy.request.latency", "command", pending.command()));
+            slowQueryTracker.observe(pending.slowQueryContext(), elapsedMillis(pending.startNanos()), nanosToMillis(pending.backendNanos()));
             ctx.writeAndFlush(Unpooled.copiedBuffer("-ERR backend unavailable\r\n", StandardCharsets.US_ASCII));
             return;
         }
@@ -204,6 +211,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
         }
         observeResponseSize(pending.command(), response.readableBytes());
         largeKeyTracker.observeResponse(pending.largeKeyContext(), response.readableBytes());
+        slowQueryTracker.observe(pending.slowQueryContext(), elapsedMillis(pending.startNanos()), nanosToMillis(pending.backendNanos()));
         pending.sample().stop(registry.timer("redis.proxy.request.latency", "command", pending.command()));
         ctx.writeAndFlush(response);
     }
@@ -236,5 +244,19 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             case "inflight_limit" -> "inflight";
             default -> reason;
         };
+    }
+
+    private static long elapsedMillis(long startNanos) {
+        if (startNanos <= 0) {
+            return 0;
+        }
+        return nanosToMillis(System.nanoTime() - startNanos);
+    }
+
+    private static long nanosToMillis(long nanos) {
+        if (nanos <= 0) {
+            return 0;
+        }
+        return nanos / 1_000_000;
     }
 }

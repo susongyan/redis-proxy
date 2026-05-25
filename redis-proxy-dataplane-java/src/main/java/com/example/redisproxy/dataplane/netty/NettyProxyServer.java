@@ -3,6 +3,7 @@ package com.example.redisproxy.dataplane.netty;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.analysis.HotKeyTracker;
 import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
+import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.governance.KeyGovernanceLimiter;
 import com.example.redisproxy.dataplane.governance.NamespaceLimiter;
@@ -35,6 +36,7 @@ public class NettyProxyServer {
     private final KeyGovernanceLimiter keyGovernanceLimiter;
     private final HotKeyTracker hotKeyTracker;
     private final LargeKeyTracker largeKeyTracker;
+    private final SlowQueryTracker slowQueryTracker;
     private final MeterRegistry registry;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -42,7 +44,7 @@ public class NettyProxyServer {
     private final AtomicInteger activeConnections = new AtomicInteger();
     private final AtomicInteger pendingClientResponses = new AtomicInteger();
 
-    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, MeterRegistry registry) {
+    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, MeterRegistry registry) {
         this.properties = properties;
         this.routeResolver = routeResolver;
         this.slotRefresher = slotRefresher;
@@ -51,6 +53,7 @@ public class NettyProxyServer {
         this.keyGovernanceLimiter = keyGovernanceLimiter;
         this.hotKeyTracker = hotKeyTracker;
         this.largeKeyTracker = largeKeyTracker;
+        this.slowQueryTracker = slowQueryTracker;
         this.registry = registry;
     }
 
@@ -70,7 +73,7 @@ public class NettyProxyServer {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new RespRequestDecoder(properties.getLimits().getMaxRequestBytes()));
-                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, hotKeyTracker, largeKeyTracker, registry, activeConnections, pendingClientResponses));
+                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, hotKeyTracker, largeKeyTracker, slowQueryTracker, registry, activeConnections, pendingClientResponses));
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress(listen.host(), listen.port())).sync().channel();

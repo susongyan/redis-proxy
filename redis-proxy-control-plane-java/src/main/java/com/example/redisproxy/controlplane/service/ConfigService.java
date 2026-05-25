@@ -6,9 +6,9 @@ import com.example.redisproxy.controlplane.model.ProxyConfig;
 import com.example.redisproxy.controlplane.model.PublishRequest;
 import com.example.redisproxy.controlplane.model.RollbackRequest;
 import com.example.redisproxy.controlplane.model.RouteStatus;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -17,16 +17,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ConfigService {
+    private final ConfigRepository repository;
     private final AtomicReference<ProxyConfig> current = new AtomicReference<>();
     private final AtomicReference<ConfigVersion> currentVersion = new AtomicReference<>();
-    private final AtomicLong nextVersionId = new AtomicLong(1);
-    private final CopyOnWriteArrayList<ConfigVersion> versions = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Watcher> watchers = new CopyOnWriteArrayList<>();
     private final ScheduledExecutorService watcherTimeouts = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "config-watch-timeout");
@@ -35,9 +34,17 @@ public class ConfigService {
     });
 
     public ConfigService() {
+        this(new MemoryConfigRepository(new ObjectMapper()));
+    }
+
+    @Autowired
+    public ConfigService(ConfigRepository repository) {
+        this.repository = repository;
         ProxyConfig initial = defaultConfig();
         initial.getGovernance().applyDefaults();
-        recordVersion(initial, "system", "initial-config", "INIT", "APPROVED", null, false);
+        ConfigVersion version = repository.initializeIfEmpty(initial);
+        current.set(copyConfig(version.config()));
+        currentVersion.set(copyVersion(version));
     }
 
     public ProxyConfig get() {
@@ -73,13 +80,11 @@ public class ConfigService {
     }
 
     public List<ConfigVersion> versions() {
-        return versions.stream().map(ConfigService::copyVersion).toList();
+        return repository.versions().stream().map(ConfigService::copyVersion).toList();
     }
 
     public ConfigVersion version(long versionId) {
-        return versions.stream()
-                .filter(version -> version.versionId() == versionId)
-                .findFirst()
+        return repository.findByVersionId(versionId)
                 .map(ConfigService::copyVersion)
                 .orElseThrow(() -> new IllegalArgumentException("version not found: " + versionId));
     }
@@ -101,6 +106,7 @@ public class ConfigService {
         addChange(changes, "limits.largeResponseBytes", a.getLimits().getLargeResponseBytes(), b.getLimits().getLargeResponseBytes());
         addChange(changes, "analysis.hotKey", summarizeHotKey(a), summarizeHotKey(b));
         addChange(changes, "analysis.largeKey", summarizeLargeKey(a), summarizeLargeKey(b));
+        addChange(changes, "analysis.slowQuery", summarizeSlowQuery(a), summarizeSlowQuery(b));
         addChange(changes, "governance", summarizeGovernance(a), summarizeGovernance(b));
         return new ConfigDiff(fromVersionId, toVersionId, changes);
     }
@@ -140,19 +146,15 @@ public class ConfigService {
 
     private ConfigVersion recordVersion(ProxyConfig config, String operator, String reason, String action, String approvalStatus, Long rollbackFromVersionId, boolean notifyWatchers) {
         ProxyConfig snapshot = copyConfig(config);
-        ConfigVersion version = new ConfigVersion(
-                nextVersionId.getAndIncrement(),
-                Instant.now(),
+        ConfigVersion version = repository.saveAndActivate(
+                snapshot,
                 blankDefault(operator, "system"),
                 blankDefault(reason, "unspecified"),
                 action,
                 approvalStatus,
-                rollbackFromVersionId,
-                snapshot.getRouting().getRouteEpoch(),
-                snapshot);
+                rollbackFromVersionId);
         current.set(copyConfig(snapshot));
-        currentVersion.set(version);
-        versions.add(version);
+        currentVersion.set(copyVersion(version));
         if (notifyWatchers) {
             completeMatchingWatchers(snapshot);
         }
@@ -234,6 +236,17 @@ public class ConfigService {
                 || largeWindowMillis % largeKey.getBucketMillis() != 0) {
             throw new IllegalArgumentException("analysis.largeKey thresholds must be non-negative and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be positive with window divisible by bucket");
         }
+        ProxyConfig.SlowQuery slowQuery = analysis.getSlowQuery();
+        int slowWindowMillis = slowQuery.getWindowSeconds() * 1000;
+        if (slowQuery.getEndToEndThresholdMillis() < 0
+                || slowQuery.getBackendThresholdMillis() < 0
+                || slowQuery.getWindowSeconds() <= 0
+                || slowQuery.getBucketMillis() <= 0
+                || slowQuery.getMaxTrackedKeys() <= 0
+                || slowQuery.getDebugTopN() <= 0
+                || slowWindowMillis % slowQuery.getBucketMillis() != 0) {
+            throw new IllegalArgumentException("analysis.slowQuery thresholds must be non-negative and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be positive with window divisible by bucket");
+        }
     }
 
     private static void validateGovernance(ProxyConfig.Governance governance) {
@@ -308,12 +321,10 @@ public class ConfigService {
 
     private Optional<ConfigVersion> findVersion(Long versionId, Long routeEpoch) {
         if (versionId != null) {
-            return versions.stream().filter(version -> version.versionId() == versionId).findFirst();
+            return repository.findByVersionId(versionId);
         }
         if (routeEpoch != null) {
-            return versions.stream()
-                    .filter(version -> version.routeEpoch() == routeEpoch)
-                    .reduce((first, second) -> second);
+            return repository.findByRouteEpoch(routeEpoch);
         }
         throw new IllegalArgumentException("versionId or routeEpoch is required");
     }
@@ -356,6 +367,17 @@ public class ConfigService {
                 + ":" + largeKey.getBucketMillis()
                 + ":" + largeKey.getMaxTrackedKeys()
                 + ":" + largeKey.getDebugTopN();
+    }
+
+    private static String summarizeSlowQuery(ProxyConfig config) {
+        ProxyConfig.SlowQuery slowQuery = config.getAnalysis().getSlowQuery();
+        return slowQuery.isEnabled()
+                + ":" + slowQuery.getEndToEndThresholdMillis()
+                + ":" + slowQuery.getBackendThresholdMillis()
+                + ":" + slowQuery.getWindowSeconds()
+                + ":" + slowQuery.getBucketMillis()
+                + ":" + slowQuery.getMaxTrackedKeys()
+                + ":" + slowQuery.getDebugTopN();
     }
 
     private static String summarizeGovernance(ProxyConfig config) {
@@ -435,6 +457,15 @@ public class ConfigService {
         largeKey.setMaxTrackedKeys(source.getAnalysis().getLargeKey().getMaxTrackedKeys());
         largeKey.setDebugTopN(source.getAnalysis().getLargeKey().getDebugTopN());
         analysis.setLargeKey(largeKey);
+        ProxyConfig.SlowQuery slowQuery = new ProxyConfig.SlowQuery();
+        slowQuery.setEnabled(source.getAnalysis().getSlowQuery().isEnabled());
+        slowQuery.setEndToEndThresholdMillis(source.getAnalysis().getSlowQuery().getEndToEndThresholdMillis());
+        slowQuery.setBackendThresholdMillis(source.getAnalysis().getSlowQuery().getBackendThresholdMillis());
+        slowQuery.setWindowSeconds(source.getAnalysis().getSlowQuery().getWindowSeconds());
+        slowQuery.setBucketMillis(source.getAnalysis().getSlowQuery().getBucketMillis());
+        slowQuery.setMaxTrackedKeys(source.getAnalysis().getSlowQuery().getMaxTrackedKeys());
+        slowQuery.setDebugTopN(source.getAnalysis().getSlowQuery().getDebugTopN());
+        analysis.setSlowQuery(slowQuery);
         copy.setAnalysis(analysis);
         copy.setGovernance(copyGovernance(source.getGovernance()));
         return copy;

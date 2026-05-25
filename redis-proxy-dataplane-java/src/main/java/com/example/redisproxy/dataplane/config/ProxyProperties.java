@@ -211,14 +211,18 @@ public class ProxyProperties {
     public static class Analysis {
         private HotKey hotKey = new HotKey();
         private LargeKey largeKey = new LargeKey();
+        private SlowQuery slowQuery = new SlowQuery();
         public HotKey getHotKey() { return hotKey; }
         public void setHotKey(HotKey hotKey) { this.hotKey = hotKey; }
         public LargeKey getLargeKey() { return largeKey; }
         public void setLargeKey(LargeKey largeKey) { this.largeKey = largeKey; }
+        public SlowQuery getSlowQuery() { return slowQuery; }
+        public void setSlowQuery(SlowQuery slowQuery) { this.slowQuery = slowQuery; }
 
         void validate() {
             hotKey.validate();
             largeKey.validate();
+            slowQuery.validate();
         }
     }
 
@@ -274,6 +278,37 @@ public class ProxyProperties {
             int windowMillis = windowSeconds * 1000;
             if (requestBytesThreshold < 0 || responseBytesThreshold < 0 || windowSeconds <= 0 || bucketMillis <= 0 || maxTrackedKeys <= 0 || debugTopN <= 0 || windowMillis % bucketMillis != 0) {
                 throw new IllegalArgumentException("analysis.largeKey thresholds must be non-negative and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be positive with window divisible by bucket");
+            }
+        }
+    }
+
+    public static class SlowQuery {
+        private boolean enabled = true;
+        private int endToEndThresholdMillis = 100;
+        private int backendThresholdMillis = 50;
+        private int windowSeconds = 300;
+        private int bucketMillis = 1000;
+        private int maxTrackedKeys = 10_000;
+        private int debugTopN = 100;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getEndToEndThresholdMillis() { return endToEndThresholdMillis; }
+        public void setEndToEndThresholdMillis(int endToEndThresholdMillis) { this.endToEndThresholdMillis = endToEndThresholdMillis; }
+        public int getBackendThresholdMillis() { return backendThresholdMillis; }
+        public void setBackendThresholdMillis(int backendThresholdMillis) { this.backendThresholdMillis = backendThresholdMillis; }
+        public int getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
+        public int getBucketMillis() { return bucketMillis; }
+        public void setBucketMillis(int bucketMillis) { this.bucketMillis = bucketMillis; }
+        public int getMaxTrackedKeys() { return maxTrackedKeys; }
+        public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
+        public int getDebugTopN() { return debugTopN; }
+        public void setDebugTopN(int debugTopN) { this.debugTopN = debugTopN; }
+
+        void validate() {
+            int windowMillis = windowSeconds * 1000;
+            if (endToEndThresholdMillis < 0 || backendThresholdMillis < 0 || windowSeconds <= 0 || bucketMillis <= 0 || maxTrackedKeys <= 0 || debugTopN <= 0 || windowMillis % bucketMillis != 0) {
+                throw new IllegalArgumentException("analysis.slowQuery thresholds must be non-negative and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be positive with window divisible by bucket");
             }
         }
     }

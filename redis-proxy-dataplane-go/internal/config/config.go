@@ -67,8 +67,9 @@ type LimitsConfig struct {
 }
 
 type AnalysisConfig struct {
-	HotKey   HotKeyAnalysisConfig   `yaml:"hotKey" json:"hotKey"`
-	LargeKey LargeKeyAnalysisConfig `yaml:"largeKey" json:"largeKey"`
+	HotKey    HotKeyAnalysisConfig    `yaml:"hotKey" json:"hotKey"`
+	LargeKey  LargeKeyAnalysisConfig  `yaml:"largeKey" json:"largeKey"`
+	SlowQuery SlowQueryAnalysisConfig `yaml:"slowQuery" json:"slowQuery"`
 }
 
 type HotKeyAnalysisConfig struct {
@@ -87,6 +88,16 @@ type LargeKeyAnalysisConfig struct {
 	BucketMillis           int   `yaml:"bucketMillis" json:"bucketMillis"`
 	MaxTrackedKeys         int   `yaml:"maxTrackedKeys" json:"maxTrackedKeys"`
 	DebugTopN              int   `yaml:"debugTopN" json:"debugTopN"`
+}
+
+type SlowQueryAnalysisConfig struct {
+	Enabled                 *bool `yaml:"enabled" json:"enabled"`
+	EndToEndThresholdMillis int   `yaml:"endToEndThresholdMillis" json:"endToEndThresholdMillis"`
+	BackendThresholdMillis  int   `yaml:"backendThresholdMillis" json:"backendThresholdMillis"`
+	WindowSeconds           int   `yaml:"windowSeconds" json:"windowSeconds"`
+	BucketMillis            int   `yaml:"bucketMillis" json:"bucketMillis"`
+	MaxTrackedKeys          int   `yaml:"maxTrackedKeys" json:"maxTrackedKeys"`
+	DebugTopN               int   `yaml:"debugTopN" json:"debugTopN"`
 }
 
 type ControlPlaneConfig struct {
@@ -321,6 +332,28 @@ func applyAnalysisDefaults(analysis *AnalysisConfig) {
 	if analysis.LargeKey.DebugTopN == 0 {
 		analysis.LargeKey.DebugTopN = 100
 	}
+	if analysis.SlowQuery.Enabled == nil {
+		enabled := true
+		analysis.SlowQuery.Enabled = &enabled
+	}
+	if analysis.SlowQuery.EndToEndThresholdMillis == 0 {
+		analysis.SlowQuery.EndToEndThresholdMillis = 100
+	}
+	if analysis.SlowQuery.BackendThresholdMillis == 0 {
+		analysis.SlowQuery.BackendThresholdMillis = 50
+	}
+	if analysis.SlowQuery.WindowSeconds == 0 {
+		analysis.SlowQuery.WindowSeconds = 300
+	}
+	if analysis.SlowQuery.BucketMillis == 0 {
+		analysis.SlowQuery.BucketMillis = 1000
+	}
+	if analysis.SlowQuery.MaxTrackedKeys == 0 {
+		analysis.SlowQuery.MaxTrackedKeys = 10000
+	}
+	if analysis.SlowQuery.DebugTopN == 0 {
+		analysis.SlowQuery.DebugTopN = 100
+	}
 }
 
 func (h HotKeyAnalysisConfig) IsEnabled() bool {
@@ -329,6 +362,10 @@ func (h HotKeyAnalysisConfig) IsEnabled() bool {
 
 func (l LargeKeyAnalysisConfig) IsEnabled() bool {
 	return l.Enabled == nil || *l.Enabled
+}
+
+func (s SlowQueryAnalysisConfig) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 func (c *Config) validateAnalysis() error {
@@ -353,6 +390,18 @@ func (c *Config) validateAnalysis() error {
 	}
 	if largeWindowMillis%c.Analysis.LargeKey.BucketMillis != 0 {
 		return errors.New("analysis.largeKey windowSeconds must be divisible by bucketMillis")
+	}
+	slowWindowMillis := c.Analysis.SlowQuery.WindowSeconds * 1000
+	if c.Analysis.SlowQuery.EndToEndThresholdMillis < 0 ||
+		c.Analysis.SlowQuery.BackendThresholdMillis < 0 ||
+		c.Analysis.SlowQuery.WindowSeconds <= 0 ||
+		c.Analysis.SlowQuery.BucketMillis <= 0 ||
+		c.Analysis.SlowQuery.MaxTrackedKeys <= 0 ||
+		c.Analysis.SlowQuery.DebugTopN <= 0 {
+		return errors.New("analysis.slowQuery thresholds must be >= 0 and windowSeconds, bucketMillis, maxTrackedKeys and debugTopN must be > 0")
+	}
+	if slowWindowMillis%c.Analysis.SlowQuery.BucketMillis != 0 {
+		return errors.New("analysis.slowQuery windowSeconds must be divisible by bucketMillis")
 	}
 	return nil
 }

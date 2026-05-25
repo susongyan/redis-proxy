@@ -30,6 +30,6 @@ class ClientResponseSequencerTest {
     }
 
     private static PendingResponse response(String value) {
-        return new PendingResponse(Unpooled.copiedBuffer(value, StandardCharsets.US_ASCII), null, "GET", null, null);
+        return new PendingResponse(Unpooled.copiedBuffer(value, StandardCharsets.US_ASCII), null, "GET", null, null, null, 0, 0);
     }
 }

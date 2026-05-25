@@ -3,6 +3,7 @@ package com.example.redisproxy.dataplane.router;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.analysis.HotKeyTracker;
 import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
+import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -32,6 +33,7 @@ public class RouteSnapshotPoller {
     private final BackendPool backendPool;
     private final HotKeyTracker hotKeyTracker;
     private final LargeKeyTracker largeKeyTracker;
+    private final SlowQueryTracker slowQueryTracker;
     private final ObjectMapper objectMapper;
     private final MeterRegistry registry;
     private final HttpClient client;
@@ -39,12 +41,13 @@ public class RouteSnapshotPoller {
     private volatile boolean stopped;
     private ScheduledExecutorService scheduler;
 
-    public RouteSnapshotPoller(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, ObjectMapper objectMapper, MeterRegistry registry) {
+    public RouteSnapshotPoller(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, ObjectMapper objectMapper, MeterRegistry registry) {
         this.properties = properties;
         this.routeResolver = routeResolver;
         this.backendPool = backendPool;
         this.hotKeyTracker = hotKeyTracker;
         this.largeKeyTracker = largeKeyTracker;
+        this.slowQueryTracker = slowQueryTracker;
         this.objectMapper = objectMapper;
         this.registry = registry;
         this.client = HttpClient.newBuilder()
@@ -108,6 +111,7 @@ public class RouteSnapshotPoller {
             }
             hotKeyTracker.configure(next.getAnalysis().getHotKey());
             largeKeyTracker.configure(next.getAnalysis().getLargeKey());
+            slowQueryTracker.configure(next.getAnalysis().getSlowQuery());
             registry.counter("redis.proxy.route.snapshot.update", "result", "success").increment();
             lastSuccessTimestampSeconds.set(System.currentTimeMillis() / 1000);
             return false;

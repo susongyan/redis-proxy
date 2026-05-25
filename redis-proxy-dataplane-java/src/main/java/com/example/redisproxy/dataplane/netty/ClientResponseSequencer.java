@@ -2,6 +2,7 @@ package com.example.redisproxy.dataplane.netty;
 
 import io.netty.buffer.ByteBuf;
 import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
+import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Consumer;
@@ -31,5 +32,5 @@ public final class ClientResponseSequencer {
         return pending.size();
     }
 
-    public record PendingResponse(ByteBuf response, Throwable error, String command, io.micrometer.core.instrument.Timer.Sample sample, LargeKeyTracker.Context largeKeyContext) {}
+    public record PendingResponse(ByteBuf response, Throwable error, String command, io.micrometer.core.instrument.Timer.Sample sample, LargeKeyTracker.Context largeKeyContext, SlowQueryTracker.Context slowQueryContext, long startNanos, long backendNanos) {}
 }

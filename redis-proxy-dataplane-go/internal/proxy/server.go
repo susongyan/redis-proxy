@@ -23,20 +23,21 @@ import (
 )
 
 type Server struct {
-	cfg       *config.Config
-	router    *router.Manager
-	backends  *backend.Pools
-	metrics   *metrics.Registry
-	log       *zap.Logger
-	ln        net.Listener
-	done      chan struct{}
-	wg        sync.WaitGroup
-	clientID  atomic.Uint64
-	onMoved   func()
-	nsLimiter *namespaceLimiter
-	keyGov    *keyGovernanceLimiter
-	hotKeys   *analysis.HotKeyTracker
-	largeKeys *analysis.LargeKeyTracker
+	cfg         *config.Config
+	router      *router.Manager
+	backends    *backend.Pools
+	metrics     *metrics.Registry
+	log         *zap.Logger
+	ln          net.Listener
+	done        chan struct{}
+	wg          sync.WaitGroup
+	clientID    atomic.Uint64
+	onMoved     func()
+	nsLimiter   *namespaceLimiter
+	keyGov      *keyGovernanceLimiter
+	hotKeys     *analysis.HotKeyTracker
+	largeKeys   *analysis.LargeKeyTracker
+	slowQueries *analysis.SlowQueryTracker
 }
 
 type completion struct {
@@ -45,11 +46,13 @@ type completion struct {
 	response []byte
 	err      error
 	start    time.Time
+	backend  time.Duration
 	largeCtx analysis.LargeKeyContext
+	slowCtx  analysis.SlowQueryContext
 }
 
-func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func(), hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker) *Server {
-	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg), hotKeys: hotKeys, largeKeys: largeKeys}
+func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func(), hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) *Server {
+	return &Server{cfg: cfg, router: rt, backends: pools, metrics: reg, log: log, done: make(chan struct{}), onMoved: onMoved, nsLimiter: newNamespaceLimiter(reg), keyGov: newKeyGovernanceLimiter(reg), hotKeys: hotKeys, largeKeys: largeKeys, slowQueries: slowQueries}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -204,6 +207,7 @@ func (s *Server) handle(conn net.Conn) {
 		s.hotKeys.Observe(namespace, req)
 		largeCtx := s.largeKeys.Context(namespace, req)
 		s.largeKeys.ObserveRequest(largeCtx, len(req.Raw))
+		slowCtx := s.slowQueries.Context(namespace, req)
 		requestNamespace := namespace
 
 		decision, err := s.router.RouteDecision(req)
@@ -215,14 +219,15 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		s.metrics.RouteDecisions.WithLabelValues(decision.Cluster, decision.Rule).Inc()
 
+		backendStart := time.Now()
 		err = s.backends.DoAsyncAffinity(decision.Addr, affinity, req.Raw, func(result backend.Result) {
 			s.nsLimiter.finishRequest(requestNamespace)
-			s.completeBackendResult(completions, clientDone, current, cmd, start, decision, affinity, req.Raw, result, false, largeCtx)
+			s.completeBackendResult(completions, clientDone, current, cmd, start, backendStart, decision, affinity, req.Raw, result, false, largeCtx, slowCtx)
 		})
 		if err != nil {
 			s.nsLimiter.finishRequest(requestNamespace)
 			s.metrics.Errors.WithLabelValues("backend").Inc()
-			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start})
+			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: err, start: start, backend: time.Since(backendStart), slowCtx: slowCtx})
 		}
 	}
 }
@@ -240,20 +245,20 @@ func namespaceLimitLabel(reason string) string {
 	}
 }
 
-func (s *Server) completeBackendResult(completions chan<- completion, clientDone <-chan struct{}, seq uint64, command string, start time.Time, decision router.Decision, affinity uint64, raw []byte, result backend.Result, askRetried bool, largeCtx analysis.LargeKeyContext) {
+func (s *Server) completeBackendResult(completions chan<- completion, clientDone <-chan struct{}, seq uint64, command string, start time.Time, backendStart time.Time, decision router.Decision, affinity uint64, raw []byte, result backend.Result, askRetried bool, largeCtx analysis.LargeKeyContext, slowCtx analysis.SlowQueryContext) {
 	if result.Err != nil || !bytes.HasPrefix(result.Response, []byte("-ASK ")) {
-		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, err: result.Err, start: start, largeCtx: largeCtx})
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, err: result.Err, start: start, backend: time.Since(backendStart), largeCtx: largeCtx, slowCtx: slowCtx})
 		return
 	}
 	if askRetried {
-		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, start: start, largeCtx: largeCtx})
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, response: result.Response, start: start, backend: time.Since(backendStart), largeCtx: largeCtx, slowCtx: slowCtx})
 		return
 	}
 	s.metrics.Ask.Inc()
 	addr, err := s.router.AskTarget(result.Response, decision.Cluster, s.backends)
 	if err != nil {
 		s.metrics.AskRedirects.WithLabelValues("error").Inc()
-		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start})
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start, backend: time.Since(backendStart), slowCtx: slowCtx})
 		return
 	}
 	if err := s.backends.DoAsyncAsking(addr, affinity, raw, func(retry backend.Result) {
@@ -264,10 +269,10 @@ func (s *Server) completeBackendResult(completions chan<- completion, clientDone
 		} else {
 			s.metrics.AskRedirects.WithLabelValues("success").Inc()
 		}
-		s.completeBackendResult(completions, clientDone, seq, command, start, decision, affinity, raw, retry, true, largeCtx)
+		s.completeBackendResult(completions, clientDone, seq, command, start, backendStart, decision, affinity, raw, retry, true, largeCtx, slowCtx)
 	}); err != nil {
 		s.metrics.AskRedirects.WithLabelValues("error").Inc()
-		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start})
+		s.enqueueCompletion(completions, clientDone, completion{seq: seq, command: command, err: err, start: start, backend: time.Since(backendStart), slowCtx: slowCtx})
 	}
 }
 
@@ -302,6 +307,7 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 	}()
 	if item.err != nil {
 		s.metrics.Errors.WithLabelValues("backend").Inc()
+		s.slowQueries.Observe(item.slowCtx, time.Since(item.start), item.backend)
 		_, err := conn.Write(protocol.ErrorFrame("backend unavailable"))
 		return err == nil
 	}
@@ -317,6 +323,7 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 	}
 	s.observeResponseSize(item.command, len(item.response))
 	s.largeKeys.ObserveResponse(item.largeCtx, len(item.response))
+	s.slowQueries.Observe(item.slowCtx, time.Since(item.start), item.backend)
 	if _, err := conn.Write(item.response); err != nil {
 		s.metrics.Errors.WithLabelValues("client_write").Inc()
 		return false

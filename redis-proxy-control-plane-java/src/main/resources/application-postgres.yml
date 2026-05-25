@@ -1,0 +1,8 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:5432/redis_proxy}
+    username: ${SPRING_DATASOURCE_USERNAME:redis_proxy}
+    password: ${SPRING_DATASOURCE_PASSWORD:redis_proxy}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true

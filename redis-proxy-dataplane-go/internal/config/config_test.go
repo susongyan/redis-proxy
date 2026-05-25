@@ -29,6 +29,17 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 		cfg.Analysis.LargeKey.DebugTopN != 100 {
 		t.Fatalf("largeKey defaults=%+v", cfg.Analysis.LargeKey)
 	}
+	if !cfg.Analysis.SlowQuery.IsEnabled() {
+		t.Fatal("slowQuery.enabled=false want true by default")
+	}
+	if cfg.Analysis.SlowQuery.EndToEndThresholdMillis != 100 ||
+		cfg.Analysis.SlowQuery.BackendThresholdMillis != 50 ||
+		cfg.Analysis.SlowQuery.WindowSeconds != 300 ||
+		cfg.Analysis.SlowQuery.BucketMillis != 1000 ||
+		cfg.Analysis.SlowQuery.MaxTrackedKeys != 10000 ||
+		cfg.Analysis.SlowQuery.DebugTopN != 100 {
+		t.Fatalf("slowQuery defaults=%+v", cfg.Analysis.SlowQuery)
+	}
 }
 
 func TestValidateRejectsNegativeClusterSlotRefreshInterval(t *testing.T) {
@@ -112,6 +123,15 @@ func TestValidateRejectsInvalidLargeKeyAnalysis(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidSlowQueryAnalysis(t *testing.T) {
+	cfg := validConfig()
+	cfg.Analysis.SlowQuery.WindowSeconds = 300
+	cfg.Analysis.SlowQuery.BucketMillis = 700
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid slow query bucket validation error")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: ServerConfig{Listen: "127.0.0.1:6379"},
@@ -135,6 +155,13 @@ func validConfig() Config {
 			BucketMillis:           1000,
 			MaxTrackedKeys:         10000,
 			DebugTopN:              100,
+		}, SlowQuery: SlowQueryAnalysisConfig{
+			EndToEndThresholdMillis: 100,
+			BackendThresholdMillis:  50,
+			WindowSeconds:           300,
+			BucketMillis:            1000,
+			MaxTrackedKeys:          10000,
+			DebugTopN:               100,
 		}},
 	}
 }

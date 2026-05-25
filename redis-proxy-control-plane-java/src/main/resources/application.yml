@@ -1,7 +1,30 @@
 server:
   port: 8090
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/control-plane;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: true
 springdoc:
   api-docs:
     path: /openapi.json
   swagger-ui:
     path: /docs
+observability:
+  storage:
+    type: memory
+    retentionSeconds: 21600
+    maxSnapshotsPerProxy: 720
+    prometheus:
+      enabled: true
+    otlp:
+      endpoint: http://127.0.0.1:4318
+      headers: {}
+    influx:
+      url: http://127.0.0.1:8086
+      org: redis-proxy
+      bucket: observability
+      token: ""

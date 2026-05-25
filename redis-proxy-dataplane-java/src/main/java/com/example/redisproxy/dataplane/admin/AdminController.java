@@ -2,6 +2,7 @@ package com.example.redisproxy.dataplane.admin;
 
 import com.example.redisproxy.dataplane.analysis.HotKeyTracker;
 import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
+import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.router.RouteResolver;
@@ -19,13 +20,15 @@ public class AdminController {
     private final BackendPool backendPool;
     private final HotKeyTracker hotKeyTracker;
     private final LargeKeyTracker largeKeyTracker;
+    private final SlowQueryTracker slowQueryTracker;
 
-    public AdminController(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker) {
+    public AdminController(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker) {
         this.properties = properties;
         this.routeResolver = routeResolver;
         this.backendPool = backendPool;
         this.hotKeyTracker = hotKeyTracker;
         this.largeKeyTracker = largeKeyTracker;
+        this.slowQueryTracker = slowQueryTracker;
     }
 
     @GetMapping("/healthz")
@@ -59,6 +62,11 @@ public class AdminController {
     @GetMapping("/debug/large-keys")
     public List<LargeKeyTracker.Entry> largeKeys(@RequestParam(name = "limit", defaultValue = "100") int limit) {
         return largeKeyTracker.snapshot(limit);
+    }
+
+    @GetMapping("/debug/slow-queries")
+    public List<SlowQueryTracker.Entry> slowQueries(@RequestParam(name = "limit", defaultValue = "100") int limit) {
+        return slowQueryTracker.snapshot(limit);
     }
 
     private boolean ready() {

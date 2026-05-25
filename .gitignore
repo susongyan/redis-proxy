@@ -7,6 +7,8 @@
 
 bench-results/
 tmp/
+data/
+**/data/
 
 **/target/
 **/build/

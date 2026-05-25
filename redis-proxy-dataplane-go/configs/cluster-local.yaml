@@ -53,3 +53,11 @@ analysis:
     bucketMillis: 1000
     maxTrackedKeys: 10000
     debugTopN: 100
+  slowQuery:
+    enabled: true
+    endToEndThresholdMillis: 100
+    backendThresholdMillis: 50
+    windowSeconds: 300
+    bucketMillis: 1000
+    maxTrackedKeys: 10000
+    debugTopN: 100

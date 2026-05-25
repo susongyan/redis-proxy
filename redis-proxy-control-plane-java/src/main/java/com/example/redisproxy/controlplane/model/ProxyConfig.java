@@ -131,10 +131,13 @@ public class ProxyConfig {
     public static class Analysis {
         @Valid private HotKey hotKey = new HotKey();
         @Valid private LargeKey largeKey = new LargeKey();
+        @Valid private SlowQuery slowQuery = new SlowQuery();
         public HotKey getHotKey() { return hotKey; }
         public void setHotKey(HotKey hotKey) { this.hotKey = hotKey; }
         public LargeKey getLargeKey() { return largeKey; }
         public void setLargeKey(LargeKey largeKey) { this.largeKey = largeKey; }
+        public SlowQuery getSlowQuery() { return slowQuery; }
+        public void setSlowQuery(SlowQuery slowQuery) { this.slowQuery = slowQuery; }
     }
 
     public static class HotKey {
@@ -169,6 +172,30 @@ public class ProxyConfig {
         public void setRequestBytesThreshold(int requestBytesThreshold) { this.requestBytesThreshold = requestBytesThreshold; }
         public int getResponseBytesThreshold() { return responseBytesThreshold; }
         public void setResponseBytesThreshold(int responseBytesThreshold) { this.responseBytesThreshold = responseBytesThreshold; }
+        public int getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
+        public int getBucketMillis() { return bucketMillis; }
+        public void setBucketMillis(int bucketMillis) { this.bucketMillis = bucketMillis; }
+        public int getMaxTrackedKeys() { return maxTrackedKeys; }
+        public void setMaxTrackedKeys(int maxTrackedKeys) { this.maxTrackedKeys = maxTrackedKeys; }
+        public int getDebugTopN() { return debugTopN; }
+        public void setDebugTopN(int debugTopN) { this.debugTopN = debugTopN; }
+    }
+
+    public static class SlowQuery {
+        private boolean enabled = true;
+        private int endToEndThresholdMillis = 100;
+        private int backendThresholdMillis = 50;
+        private int windowSeconds = 300;
+        private int bucketMillis = 1000;
+        private int maxTrackedKeys = 10_000;
+        private int debugTopN = 100;
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getEndToEndThresholdMillis() { return endToEndThresholdMillis; }
+        public void setEndToEndThresholdMillis(int endToEndThresholdMillis) { this.endToEndThresholdMillis = endToEndThresholdMillis; }
+        public int getBackendThresholdMillis() { return backendThresholdMillis; }
+        public void setBackendThresholdMillis(int backendThresholdMillis) { this.backendThresholdMillis = backendThresholdMillis; }
         public int getWindowSeconds() { return windowSeconds; }
         public void setWindowSeconds(int windowSeconds) { this.windowSeconds = windowSeconds; }
         public int getBucketMillis() { return bucketMillis; }

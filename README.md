@@ -243,7 +243,7 @@ governance:
 - 启用 key 治理时，多 key 命令任意 key 命中禁用或限流都会拒绝整个请求；无法识别 key 位置的命令 fail closed。
 - 治理指标按 Go Prometheus 命名和 Java Micrometer 命名分别暴露，语义保持一致：auth、治理拒绝/告警、namespace 当前连接和 inflight、namespace 配置限额和限流拒绝、key rule 决策、key 限额配置和滑动窗口用量。
 - namespace token 第一版以明文配置和发布，控制面版本历史会保存完整配置；平台化阶段再接密钥管理。
-- `limits.largeResponseBytes`、`analysis.hotKey.*`、`analysis.largeKey.*` 均纳入控制面发布模型；数据面接受更大 `routeEpoch` 后会随 route snapshot 生效。
+- `limits.largeResponseBytes`、`analysis.hotKey.*`、`analysis.largeKey.*`、`analysis.slowQuery.*` 均纳入控制面发布模型；数据面接受更大 `routeEpoch` 后会随 route snapshot 生效。
 - 所有切换和治理规则必须可审计、可回滚。
 
 核心治理指标：
@@ -294,6 +294,23 @@ governance:
 | 当前跟踪 key 数 | `redis_proxy_large_key_tracked_keys` | `redis.proxy.large.key.tracked.keys` |
 | 请求阈值 | `redis_proxy_large_key_request_threshold_bytes` | `redis.proxy.large.key.request.threshold.bytes` |
 | 响应阈值 | `redis_proxy_large_key_response_threshold_bytes` | `redis.proxy.large.key.response.threshold.bytes` |
+
+慢查询观测：
+
+- Go / Java 数据面都会在最终响应按 pipeline 顺序写回前记录慢查询，维度为 `namespace + command + key`。
+- 慢查询同时记录两个口径：端到端延迟是 proxy 收到请求到写回前，backend 延迟是请求进入 backend pool 到最终 backend 响应或错误完成，`ASKING` retry 计入同一次 backend 耗时。
+- 默认阈值为端到端 100ms、backend 50ms；窗口默认 300s，bucket 粒度 1s，容量默认 10000。
+- `/debug/slow-queries?limit=100` 返回当前进程 TopN 明细，包含 `maxEndToEndMillis` 和 `maxBackendMillis`。
+- Prometheus / Micrometer 只暴露低基数指标，不把真实 key 写入 metrics label。
+
+| 语义 | Go 指标 | Java 指标 |
+| --- | --- | --- |
+| 慢查询观测次数 | `redis_proxy_slow_query_observed_total{namespace,command,trigger}` | `redis.proxy.slow.query.observed{namespace,command,trigger}` |
+| 容量满后丢弃数 | `redis_proxy_slow_query_dropped_total{namespace,command}` | `redis.proxy.slow.query.dropped{namespace,command}` |
+| 无法归因命令数 | `redis_proxy_slow_query_unsupported_total{command}` | `redis.proxy.slow.query.unsupported{command}` |
+| 当前跟踪 key 数 | `redis_proxy_slow_query_tracked_keys` | `redis.proxy.slow.query.tracked.keys` |
+| 端到端阈值 | `redis_proxy_slow_query_end_to_end_threshold_millis` | `redis.proxy.slow.query.end.to.end.threshold.millis` |
+| backend 阈值 | `redis_proxy_slow_query_backend_threshold_millis` | `redis.proxy.slow.query.backend.threshold.millis` |
 
 大 response 观测：
 
@@ -360,6 +377,30 @@ REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down
 ```bash
 ./scripts/e2e-observability-config.sh go
 ./scripts/e2e-observability-config.sh java
+```
+
+生成治理与观测巡检报告：
+
+```bash
+./scripts/generate-governance-observability-report.py \
+  --admin-url http://127.0.0.1:8080 \
+  --output-dir reports/governance-observability-local
+```
+
+报告会输出 `report.md`、`summary.json`、`metrics.prom`、`route-snapshot.json`、`hot-keys.json` 和 `large-keys.json`。这是单 proxy 进程的本地快照，用于巡检和压测上下文记录，不代表跨实例全局聚合结论。
+
+执行治理与观测报告 E2E：
+
+```bash
+./scripts/e2e-governance-observability-report.sh go
+./scripts/e2e-governance-observability-report.sh java
+```
+
+执行控制面治理观测 Collector E2E：
+
+```bash
+./scripts/e2e-observability-collector.sh go
+./scripts/e2e-observability-collector.sh java
 ```
 
 执行 benchmark：
@@ -588,11 +629,27 @@ Slot cache 刷新策略：
 14. 支持本地进程级大 key 分析，按 `namespace + command + key` 归因请求/响应大小，提供 `/debug/large-keys` 查询和低基数 metrics。
 15. `analysis.largeKey.*` 已纳入控制面 publish、rollback、copy、diff、validation 模型，并随 route snapshot 动态生效。
 16. 动态观测配置 E2E 已覆盖大 key 阈值发布、debug 查询和 metrics 不泄露具体 key。
+17. 支持治理与观测报告化，脚本从 admin/debug/metrics 拉取本地快照，生成 Markdown + JSON + 原始 Prometheus/Debug 文件。
+18. 已固化 `scripts/e2e-governance-observability-report.sh`，覆盖 Go / Java 报告生成、token 不泄露和大 key metrics 低基数约束。
+19. 支持控制面 Observability Collector MVP：控制面注册 proxy admin target，按 OpenTelemetry Resource 语义记录 `service.namespace`、`service.name`、`service.instance.id`、`deployment.environment.name`，定时 pull `/metrics`、`/debug/hot-keys`、`/debug/large-keys`，并提供 summary、hot key、large key 和慢查询查询 API。
+20. 已固化 `scripts/e2e-observability-collector.sh`，覆盖 Go / Java target 注册、采集、查询、token 不泄露和慢查询明细语义。
+21. 支持本地进程级慢查询 TopN，按 `namespace + command + key` 归因端到端延迟和 backend 延迟，提供 `/debug/slow-queries` 查询和低基数 metrics。
+22. 控制面 Observability Collector 支持内存近期缓存、历史查询、跨 proxy 聚合和聚合 Prometheus endpoint，并预留 `memory` / `prometheus` / `otlp` / `influx` 存储切换配置。
+
+治理观测接入结论：
+
+- 低基数治理指标继续通过数据面 `/metrics` 或 Java `/actuator/prometheus` 暴露，由 Prometheus / Grafana 定时 pull；这部分包括 auth、governance reject/warn、namespace limit、key rule decision、大 response、hot/large key tracked/dropped 等聚合指标。
+- 热 key、大 key、慢查询这类具体明细不进入 Prometheus 高基数 label；具体 key 只通过受限 TopN debug endpoint 暴露，避免指标系统被 key 维度打爆。
+- 控制面展示具体明细时，应由控制面 Observability Collector 定时 pull 数据面 debug endpoint，并补充 `proxyId`、cluster、namespace、采集时间等维度后进入控制面缓存或持久化存储；当前控制面 API 已支持跨 proxy 聚合和内存态历史查询。
+- 控制面 Collector 对外查询结果尽量贴近 OpenTelemetry Resource 语义：用 `service.namespace`、`service.name`、`service.instance.id`、`deployment.environment.name` 表达实例身份和环境，用自定义低基数字段 `redis.proxy.dataplane`、`redis.proxy.cluster` 表达 proxy 专属维度；后续接 OTLP Collector、自研 APM 或统一 CMDB 时优先沿用这组资源属性。
+- 观测存储默认使用控制面内存近期缓存；需要外接时可切换 `observability.storage.type=prometheus|otlp|influx`。Prometheus 模式由控制面暴露聚合低基数 endpoint，OTLP / Influx 模式由 Collector best-effort 写出，失败不影响数据面请求链路。
+- 自研 APM 如果支持 Prometheus scrape，优先直接 scrape；如果只支持 push，应由 sidecar / node agent / collector 异步拉取 proxy 后再批量 push，不让 proxy 数据面直接依赖 APM 或控制面。
+- 当前明细入口：热 key 使用 `/debug/hot-keys?limit=N`，大 key 使用 `/debug/large-keys?limit=N`，慢查询使用 `/debug/slow-queries?limit=N`。
 
 待完成：
 
 1. pipeline、请求大小治理指标联动。
-2. 大 key 分析报告模板：把 debug TopN、response 分布和治理拒绝数据汇总成一次压测/巡检报告。
+2. 控制面观测数据接入真实生产 TSDB 的长稳压测和容量评估。
 3. 治理审计持久化、token 加密存储和密钥管理接入。
 
 第四阶段：控制面平台化
