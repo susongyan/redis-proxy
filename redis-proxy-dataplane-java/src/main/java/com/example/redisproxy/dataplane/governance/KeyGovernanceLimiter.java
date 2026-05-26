@@ -73,18 +73,47 @@ public class KeyGovernanceLimiter {
         }
         long nowMillis = clock.millis();
         String key = namespace + "\u0000" + rule.getName();
-        int finalBucketCount = bucketCount;
-        AtomicSlidingWindow window = windows.compute(key, (ignored, existing) -> {
-            if (existing == null
-                    || existing.bucketMillis != governance.getKeyLimitBucketMillis()
-                    || existing.bucketCount != finalBucketCount
-                    || !existing.canRepresent(nowMillis)) {
-                return new AtomicSlidingWindow(governance.getKeyLimitBucketMillis(), finalBucketCount, nowMillis);
-            }
-            return existing;
-        });
+        AtomicSlidingWindow window = window(key, governance.getKeyLimitBucketMillis(), bucketCount, nowMillis);
         AtomicSlidingWindow.Result result = window.allow(nowMillis, rule.getMaxQps());
         return new LimitResult(result.allowed(), result.total());
+    }
+
+    private AtomicSlidingWindow window(String key, int bucketMillis, int bucketCount, long nowMillis) {
+        AtomicSlidingWindow existing = windows.get(key);
+        if (validWindow(existing, bucketMillis, bucketCount, nowMillis)) {
+            return existing;
+        }
+        AtomicSlidingWindow created = new AtomicSlidingWindow(bucketMillis, bucketCount, nowMillis);
+        if (existing == null) {
+            AtomicSlidingWindow previous = windows.putIfAbsent(key, created);
+            if (previous == null) {
+                return created;
+            }
+            return validWindow(previous, bucketMillis, bucketCount, nowMillis)
+                    ? previous
+                    : replaceWindow(key, previous, created, bucketMillis, bucketCount, nowMillis);
+        }
+        return replaceWindow(key, existing, created, bucketMillis, bucketCount, nowMillis);
+    }
+
+    private AtomicSlidingWindow replaceWindow(String key, AtomicSlidingWindow expected, AtomicSlidingWindow replacement,
+                                              int bucketMillis, int bucketCount, long nowMillis) {
+        if (windows.replace(key, expected, replacement)) {
+            return replacement;
+        }
+        AtomicSlidingWindow current = windows.get(key);
+        if (validWindow(current, bucketMillis, bucketCount, nowMillis)) {
+            return current;
+        }
+        AtomicSlidingWindow previous = windows.putIfAbsent(key, replacement);
+        return validWindow(previous, bucketMillis, bucketCount, nowMillis) ? previous : replacement;
+    }
+
+    private static boolean validWindow(AtomicSlidingWindow window, int bucketMillis, int bucketCount, long nowMillis) {
+        return window != null
+                && window.bucketMillis == bucketMillis
+                && window.bucketCount == bucketCount
+                && window.canRepresent(nowMillis);
     }
 
     private void observeDecision(String namespace, String rule, String command, String result, String reason) {

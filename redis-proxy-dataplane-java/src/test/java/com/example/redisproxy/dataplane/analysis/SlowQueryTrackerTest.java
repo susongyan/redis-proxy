@@ -10,7 +10,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
 
 class SlowQueryTrackerTest {
@@ -51,6 +56,39 @@ class SlowQueryTrackerTest {
     }
 
     @Test
+    void concurrentUpdatesKeepMaxLatencyAndCount() throws Exception {
+        SlowQueryTracker tracker = new SlowQueryTracker(new SimpleMeterRegistry(), properties());
+        tracker.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
+        SlowQueryTracker.Context context = tracker.context("app-a", request("GET", "key-1"));
+
+        runConcurrent(64, index -> {
+            tracker.observe(context, 20 + index, 8 + index);
+            return 1;
+        });
+
+        assertThat(tracker.snapshot(1))
+                .extracting(SlowQueryTracker.Entry::key, SlowQueryTracker.Entry::count, SlowQueryTracker.Entry::maxEndToEndMillis, SlowQueryTracker.Entry::maxBackendMillis)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("key-1", 64L, 83L, 71L));
+    }
+
+    @Test
+    void capacityReservationPreventsConcurrentOverTracking() throws Exception {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ProxyProperties properties = properties();
+        properties.getAnalysis().getSlowQuery().setMaxTrackedKeys(4);
+        SlowQueryTracker tracker = new SlowQueryTracker(registry, properties);
+        tracker.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
+
+        runConcurrent(32, index -> {
+            tracker.observe(tracker.context("app-a", request("GET", "key-" + index)), 20, 0);
+            return 1;
+        });
+
+        assertThat(registry.get("redis.proxy.slow.query.tracked.keys").gauge().value()).isEqualTo(4.0);
+        assertThat(registry.get("redis.proxy.slow.query.dropped").tag("namespace", "app-a").tag("command", "GET").counter().count()).isEqualTo(28.0);
+    }
+
+    @Test
     void expiresOutsideSlidingWindow() {
         SlowQueryTracker tracker = new SlowQueryTracker(new SimpleMeterRegistry(), properties());
         ClockHolder clock = new ClockHolder(0);
@@ -77,6 +115,27 @@ class SlowQueryTrackerTest {
         return new RespRequest(
                 Unpooled.copiedBuffer("raw", StandardCharsets.US_ASCII),
                 Arrays.stream(args).map(arg -> arg.getBytes(StandardCharsets.US_ASCII)).toList());
+    }
+
+    private static void runConcurrent(int tasks, IndexedCallable task) throws Exception {
+        var executor = Executors.newFixedThreadPool(8);
+        try {
+            List<Callable<Integer>> calls = new ArrayList<>();
+            for (int i = 0; i < tasks; i++) {
+                int index = i;
+                calls.add(() -> task.call(index));
+            }
+            for (Future<Integer> future : executor.invokeAll(calls)) {
+                future.get();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @FunctionalInterface
+    private interface IndexedCallable {
+        Integer call(int index) throws Exception;
     }
 
     private static final class ClockHolder extends Clock {

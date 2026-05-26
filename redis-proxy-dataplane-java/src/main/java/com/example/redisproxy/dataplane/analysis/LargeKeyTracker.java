@@ -9,9 +9,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -22,18 +23,12 @@ public class LargeKeyTracker {
     private static final long DEFAULT_BUCKET_MILLIS = 1_000;
 
     private final MeterRegistry registry;
-    private final Map<KeyId, Window> counts = new HashMap<>();
+    private final Map<KeyId, Window> counts = new ConcurrentHashMap<>();
     private final AtomicInteger trackedKeys = new AtomicInteger();
     private final AtomicInteger requestThresholdGauge = new AtomicInteger();
     private final AtomicInteger responseThresholdGauge = new AtomicInteger();
     private Clock clock = Clock.systemUTC();
-    private boolean enabled = true;
-    private int requestThreshold;
-    private int responseThreshold;
-    private int maxTracked = 10_000;
-    private int debugTopN = 100;
-    private long bucketMillis = DEFAULT_BUCKET_MILLIS;
-    private int bucketCount = (int) (DEFAULT_WINDOW_MILLIS / DEFAULT_BUCKET_MILLIS);
+    private volatile TrackerConfig config = new TrackerConfig(true, 0, 0, 10_000, 100, DEFAULT_BUCKET_MILLIS, (int) (DEFAULT_WINDOW_MILLIS / DEFAULT_BUCKET_MILLIS));
 
     @Autowired
     public LargeKeyTracker(MeterRegistry registry, ProxyProperties properties) {
@@ -48,23 +43,26 @@ public class LargeKeyTracker {
         this(registry, new ProxyProperties());
     }
 
-    public synchronized void configure(ProxyProperties.LargeKey config) {
-        long windowMillis = Math.max(1, config.getWindowSeconds()) * 1000L;
-        long nextBucketMillis = Math.max(1, config.getBucketMillis());
+    public void configure(ProxyProperties.LargeKey next) {
+        long windowMillis = Math.max(1, next.getWindowSeconds()) * 1000L;
+        long nextBucketMillis = Math.max(1, next.getBucketMillis());
         int nextBucketCount = Math.max(1, (int) (windowMillis / nextBucketMillis));
-        int nextMaxTracked = Math.max(1, config.getMaxTrackedKeys());
-        boolean changedWindow = bucketMillis != nextBucketMillis || bucketCount != nextBucketCount;
-        boolean changedCapacity = maxTracked != nextMaxTracked;
-        enabled = config.isEnabled();
-        requestThreshold = Math.max(0, config.getRequestBytesThreshold());
-        responseThreshold = Math.max(0, config.getResponseBytesThreshold());
+        int nextMaxTracked = Math.max(1, next.getMaxTrackedKeys());
+        int requestThreshold = Math.max(0, next.getRequestBytesThreshold());
+        int responseThreshold = Math.max(0, next.getResponseBytesThreshold());
+        TrackerConfig previous = config;
+        TrackerConfig updated = new TrackerConfig(
+                next.isEnabled(),
+                requestThreshold,
+                responseThreshold,
+                nextMaxTracked,
+                Math.max(1, next.getDebugTopN()),
+                nextBucketMillis,
+                nextBucketCount);
+        config = updated;
         requestThresholdGauge.set(requestThreshold);
         responseThresholdGauge.set(responseThreshold);
-        bucketMillis = nextBucketMillis;
-        bucketCount = nextBucketCount;
-        maxTracked = nextMaxTracked;
-        debugTopN = Math.max(1, config.getDebugTopN());
-        if (changedWindow || changedCapacity || !enabled) {
+        if (previous.bucketMillis() != nextBucketMillis || previous.bucketCount() != nextBucketCount || previous.maxTracked() != nextMaxTracked || !updated.enabled()) {
             counts.clear();
             trackedKeys.set(0);
         }
@@ -89,34 +87,36 @@ public class LargeKeyTracker {
         observe(context, 0, size, "response");
     }
 
-    public synchronized List<Entry> snapshot(int limit) {
+    public List<Entry> snapshot(int limit) {
+        TrackerConfig cfg = config;
         if (limit <= 0) {
-            limit = debugTopN;
+            limit = cfg.debugTopN();
         }
-        if (!enabled) {
+        if (!cfg.enabled()) {
             return List.of();
         }
-        long currentBucket = clock.millis() / bucketMillis;
-        prune(currentBucket);
+        long nowMillis = clock.millis();
+        prune(nowMillis, cfg);
         trackedKeys.set(counts.size());
-        return top(currentBucket, limit);
+        return top(nowMillis, limit);
     }
 
     void setClock(Clock clock) {
         this.clock = clock;
     }
 
-    private synchronized void observe(Context context, int requestBytes, int responseBytes, String direction) {
+    private void observe(Context context, int requestBytes, int responseBytes, String direction) {
         if (context == null) {
             return;
         }
-        if (!enabled) {
+        TrackerConfig cfg = config;
+        if (!cfg.enabled()) {
             return;
         }
-        if ("request".equals(direction) && (requestThreshold <= 0 || requestBytes < requestThreshold)) {
+        if ("request".equals(direction) && (cfg.requestThreshold() <= 0 || requestBytes < cfg.requestThreshold())) {
             return;
         }
-        if ("response".equals(direction) && (responseThreshold <= 0 || responseBytes < responseThreshold)) {
+        if ("response".equals(direction) && (cfg.responseThreshold() <= 0 || responseBytes < cfg.responseThreshold())) {
             return;
         }
         if (!context.supported() || context.keys().isEmpty()) {
@@ -124,28 +124,69 @@ public class LargeKeyTracker {
             return;
         }
         long nowMillis = clock.millis();
-        long currentBucket = nowMillis / bucketMillis;
         for (String raw : context.keys()) {
             KeyId key = new KeyId(context.namespace(), context.command(), raw);
-            Window window = counts.get(key);
-            if (window == null && counts.size() >= maxTracked) {
-                registry.counter("redis.proxy.large.key.dropped", "namespace", context.namespace(), "command", context.command()).increment();
+            Window window = windowFor(key, cfg, nowMillis, context.namespace(), context.command());
+            if (window == null) {
                 continue;
             }
-            if (window == null) {
-                window = new Window(bucketCount);
-                counts.put(key, window);
-            }
-            window.observe(currentBucket, requestBytes, responseBytes, nowMillis / 1000);
+            window.observe(nowMillis, requestBytes, responseBytes, nowMillis / 1000);
             registry.counter("redis.proxy.large.key.observed", "namespace", context.namespace(), "command", context.command(), "direction", direction).increment();
         }
-        prune(currentBucket);
-        trackedKeys.set(counts.size());
     }
 
-    private List<Entry> top(long currentBucket, int limit) {
+    private Window windowFor(KeyId key, TrackerConfig cfg, long nowMillis, String namespace, String command) {
+        Window existing = counts.get(key);
+        if (existing != null && existing.matches(cfg)) {
+            return existing;
+        }
+        if (existing != null) {
+            Window replacement = new Window(cfg, nowMillis);
+            return replaceExistingWindow(key, existing, replacement, cfg, nowMillis, namespace, command);
+        }
+        if (!reserve(namespace, command, cfg.maxTracked())) {
+            return null;
+        }
+        Window created = new Window(cfg, nowMillis);
+        Window raced = counts.putIfAbsent(key, created);
+        if (raced != null) {
+            trackedKeys.decrementAndGet();
+            return raced.matches(cfg) ? raced : windowFor(key, cfg, nowMillis, namespace, command);
+        }
+        return created;
+    }
+
+    private Window replaceExistingWindow(KeyId key, Window expected, Window replacement, TrackerConfig cfg,
+                                         long nowMillis, String namespace, String command) {
+        if (counts.replace(key, expected, replacement)) {
+            return replacement;
+        }
+        Window current = counts.get(key);
+        if (current == null) {
+            return windowFor(key, cfg, nowMillis, namespace, command);
+        }
+        if (current.matches(cfg)) {
+            return current;
+        }
+        return replaceExistingWindow(key, current, new Window(cfg, nowMillis), cfg, nowMillis, namespace, command);
+    }
+
+    private boolean reserve(String namespace, String command, int maxTracked) {
+        while (true) {
+            int current = trackedKeys.get();
+            if (current >= maxTracked) {
+                registry.counter("redis.proxy.large.key.dropped", "namespace", namespace, "command", command).increment();
+                return false;
+            }
+            if (trackedKeys.compareAndSet(current, current + 1)) {
+                return true;
+            }
+        }
+    }
+
+    private List<Entry> top(long nowMillis, int limit) {
         return counts.entrySet().stream()
-                .map(item -> item.getValue().total(item.getKey(), currentBucket, bucketCount))
+                .map(item -> item.getValue().total(item.getKey(), nowMillis))
                 .filter(entry -> entry.count() > 0)
                 .sorted(Comparator.comparingInt((Entry entry) -> Math.max(entry.maxRequestBytes(), entry.maxResponseBytes())).reversed()
                         .thenComparing(Entry::count, Comparator.reverseOrder())
@@ -156,61 +197,94 @@ public class LargeKeyTracker {
                 .toList();
     }
 
-    private void prune(long currentBucket) {
-        counts.entrySet().removeIf(item -> item.getValue().total(item.getKey(), currentBucket, bucketCount).count() == 0);
+    private void prune(long nowMillis, TrackerConfig cfg) {
+        counts.entrySet().removeIf(item -> {
+            boolean remove = !item.getValue().matches(cfg) || item.getValue().total(item.getKey(), nowMillis).count() == 0;
+            if (remove) {
+                trackedKeys.updateAndGet(value -> Math.max(0, value - 1));
+            }
+            return remove;
+        });
     }
 
     public record Context(String namespace, String command, List<String> keys, boolean supported) {}
     public record Entry(String namespace, String command, String key, long count, int maxRequestBytes, int maxResponseBytes, long lastSeenUnix) {}
     private record KeyId(String namespace, String command, String key) {}
+    private record TrackerConfig(boolean enabled, int requestThreshold, int responseThreshold, int maxTracked, int debugTopN, long bucketMillis, int bucketCount) {}
 
     private static final class Window {
-        private final Bucket[] buckets;
+        private final long bucketMillis;
+        private final int bucketCount;
+        private final long baseBucketIndex;
+        private final AtomicReferenceArray<BucketState> buckets;
 
-        private Window(int bucketCount) {
-            this.buckets = new Bucket[bucketCount];
+        private Window(TrackerConfig cfg, long nowMillis) {
+            this.bucketMillis = cfg.bucketMillis();
+            this.bucketCount = cfg.bucketCount();
+            this.baseBucketIndex = Math.floorDiv(nowMillis, bucketMillis);
+            this.buckets = new AtomicReferenceArray<>(bucketCount);
             for (int i = 0; i < bucketCount; i++) {
-                this.buckets[i] = new Bucket(-1);
+                buckets.set(i, BucketState.empty());
             }
         }
 
-        private void observe(long bucket, int requestBytes, int responseBytes, long lastSeenUnix) {
-            int slot = (int) (bucket % buckets.length);
-            if (buckets[slot].index != bucket) {
-                buckets[slot] = new Bucket(bucket);
-            }
-            buckets[slot].count++;
-            buckets[slot].maxRequestBytes = Math.max(buckets[slot].maxRequestBytes, requestBytes);
-            buckets[slot].maxResponseBytes = Math.max(buckets[slot].maxResponseBytes, responseBytes);
-            buckets[slot].lastSeenUnix = Math.max(buckets[slot].lastSeenUnix, lastSeenUnix);
+        private boolean matches(TrackerConfig cfg) {
+            return bucketMillis == cfg.bucketMillis() && bucketCount == cfg.bucketCount();
         }
 
-        private Entry total(KeyId key, long currentBucket, int bucketCount) {
+        private void observe(long nowMillis, int requestBytes, int responseBytes, long lastSeenUnix) {
+            long currentRelative = relativeBucket(nowMillis);
+            if (currentRelative < 0 || currentRelative > Integer.MAX_VALUE) {
+                return;
+            }
+            int slot = Math.floorMod(currentRelative, bucketCount);
+            while (true) {
+                BucketState before = buckets.get(slot);
+                BucketState next = before.relativeIndex() == currentRelative
+                        ? before.merge(requestBytes, responseBytes, lastSeenUnix)
+                        : new BucketState(currentRelative, 1, requestBytes, responseBytes, lastSeenUnix);
+                if (buckets.compareAndSet(slot, before, next)) {
+                    return;
+                }
+                Thread.onSpinWait();
+            }
+        }
+
+        private Entry total(KeyId key, long nowMillis) {
+            long currentRelative = relativeBucket(nowMillis);
             long count = 0;
             int maxRequestBytes = 0;
             int maxResponseBytes = 0;
             long lastSeenUnix = 0;
-            for (Bucket bucket : buckets) {
-                if (bucket.index >= 0 && currentBucket - bucket.index < bucketCount) {
-                    count += bucket.count;
-                    maxRequestBytes = Math.max(maxRequestBytes, bucket.maxRequestBytes);
-                    maxResponseBytes = Math.max(maxResponseBytes, bucket.maxResponseBytes);
-                    lastSeenUnix = Math.max(lastSeenUnix, bucket.lastSeenUnix);
+            for (int i = 0; i < bucketCount; i++) {
+                BucketState bucket = buckets.get(i);
+                if (bucket.relativeIndex() >= 0 && currentRelative >= bucket.relativeIndex() && currentRelative - bucket.relativeIndex() < bucketCount) {
+                    count += bucket.count();
+                    maxRequestBytes = Math.max(maxRequestBytes, bucket.maxRequestBytes());
+                    maxResponseBytes = Math.max(maxResponseBytes, bucket.maxResponseBytes());
+                    lastSeenUnix = Math.max(lastSeenUnix, bucket.lastSeenUnix());
                 }
             }
             return new Entry(key.namespace(), key.command(), key.key(), count, maxRequestBytes, maxResponseBytes, lastSeenUnix);
         }
+
+        private long relativeBucket(long nowMillis) {
+            return Math.floorDiv(nowMillis, bucketMillis) - baseBucketIndex;
+        }
     }
 
-    private static final class Bucket {
-        private final long index;
-        private long count;
-        private int maxRequestBytes;
-        private int maxResponseBytes;
-        private long lastSeenUnix;
+    private record BucketState(long relativeIndex, long count, int maxRequestBytes, int maxResponseBytes, long lastSeenUnix) {
+        private static BucketState empty() {
+            return new BucketState(-1, 0, 0, 0, 0);
+        }
 
-        private Bucket(long index) {
-            this.index = index;
+        private BucketState merge(int requestBytes, int responseBytes, long lastSeenUnix) {
+            return new BucketState(
+                    relativeIndex,
+                    count + 1,
+                    Math.max(maxRequestBytes, requestBytes),
+                    Math.max(maxResponseBytes, responseBytes),
+                    Math.max(this.lastSeenUnix, lastSeenUnix));
         }
     }
 }

@@ -65,12 +65,7 @@ public class NamespaceLimiter {
         observeLimits(namespace);
         if (limits.getMaxQps() > 0) {
             long nowMillis = clock.millis();
-            AtomicSlidingWindow window = qpsWindows.compute(name, (ignored, existing) -> {
-                if (existing == null || !existing.canRepresent(nowMillis)) {
-                    return new AtomicSlidingWindow(1000, 1, nowMillis);
-                }
-                return existing;
-            });
+            AtomicSlidingWindow window = qpsWindow(name, nowMillis);
             if (!window.allow(nowMillis, limits.getMaxQps()).allowed()) {
                 return LimitResult.rejected("qps_limit");
             }
@@ -106,6 +101,35 @@ public class NamespaceLimiter {
 
     private AtomicInteger counter(Map<String, AtomicInteger> counters, String namespace) {
         return counters.computeIfAbsent(namespace, ignored -> new AtomicInteger());
+    }
+
+    private AtomicSlidingWindow qpsWindow(String namespace, long nowMillis) {
+        AtomicSlidingWindow existing = qpsWindows.get(namespace);
+        if (existing != null && existing.canRepresent(nowMillis)) {
+            return existing;
+        }
+        AtomicSlidingWindow created = new AtomicSlidingWindow(1000, 1, nowMillis);
+        if (existing == null) {
+            AtomicSlidingWindow previous = qpsWindows.putIfAbsent(namespace, created);
+            if (previous == null || !previous.canRepresent(nowMillis)) {
+                return previous == null ? created : replaceWindow(namespace, previous, created, nowMillis);
+            }
+            return previous;
+        }
+        return replaceWindow(namespace, existing, created, nowMillis);
+    }
+
+    private AtomicSlidingWindow replaceWindow(String namespace, AtomicSlidingWindow expected,
+                                             AtomicSlidingWindow replacement, long nowMillis) {
+        if (qpsWindows.replace(namespace, expected, replacement)) {
+            return replacement;
+        }
+        AtomicSlidingWindow current = qpsWindows.get(namespace);
+        if (current != null && current.canRepresent(nowMillis)) {
+            return current;
+        }
+        AtomicSlidingWindow previous = qpsWindows.putIfAbsent(namespace, replacement);
+        return previous == null || !previous.canRepresent(nowMillis) ? replacement : previous;
     }
 
     private static boolean tryAcquire(AtomicInteger counter, int limit) {
