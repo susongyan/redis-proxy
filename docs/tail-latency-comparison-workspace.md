@@ -426,20 +426,32 @@ Java 当前链路同时包含 Spring Boot admin、Micrometer、前端 Netty、�
 
 ### 优先级 P3：协议解析专项优化
 
-如果 P1/P2 后 Java 仍明显落后，再进入 parser 级优化。
+当前 Go / Java 数据面都需要先识别 RESP 请求边界，再执行路由、治理、观测和 backend 转发。这个过程不是完整 Redis 对象反序列化，但当前实现会构建参数数组并在部分路径复制或字符串化 command/key，是后续 CPU、allocation 和大 value 内存峰值优化的重点。
+
+不能把 proxy 简化成盲目 TCP pipe：pipeline 顺序、请求大小限制、slot 路由、namespace/key 治理、ASKING/MOVED、backend inflight 和失败占位响应都依赖请求边界和 key 信息。正确的优化方向是 shallow parse 和少拷贝转发。
 
 建议实现：
 
-- JMH benchmark 覆盖 RESP request decoder 和 response frame decoder。
-- 使用 byte-level parser，减少边界检查和对象创建。
-- 针对常见命令 `GET`、`SET`、`DEL`、`MGET` 做轻量 fast path。
-- 解析只提取路由所需 key 和 command，不构造完整对象树。
+- JMH benchmark 覆盖 Java RESP request decoder 和 response frame decoder；Go 使用 `go test -bench` 覆盖 request parser。
+- 将请求解析分层为：
+  - `L0 frame boundary parser`：只识别完整 RESP frame，用于 pipeline 切分、大小限制和 raw 转发。
+  - `L1 command/key offset parser`：只提取 command 和 key 的 offset/length，用于 route、governance、hot/large/slow 归因。
+  - `L2 command-specific key parser`：覆盖 `GET/SET/DEL/MGET/MSET/EXPIRE/HGET/HSET/ZADD` 等常用命令。
+  - `L3 full args materialize`：仅在 `AUTH`、debug 明细或特殊治理逻辑确实需要字符串时按需触发。
+- Java `RespRequest` 从 `ByteBuf raw + List<byte[]> args` 演进为 `ByteBuf raw + List<ArgRef>`，避免每个 bulk arg 复制成 `byte[]`。
+- Java 长度解析直接从 `ByteBuf` 读取 ASCII 数字，去掉 `toString + Integer.parseInt`。
+- Go `protocol.Request` 从 `Raw []byte + Args [][]byte` 演进为 `Raw []byte + ArgRef[]`，减少 raw 与 args 双份持有。
+- key prefix、hashTag、slot 计算、deny/warn 命令判断优先使用 byte-level fast path。
+- 热 key、大 key、慢查询只在进入 TopN/debug/report 输出时把 key 转为字符串，避免请求热路径字符串化。
 
 验证目标：
 
 - parser allocation 接近零。
 - 小 value、高 QPS 场景 CPU 降低。
 - 不影响大 value 和 nested array 的正确性。
+- 大 value `SET/MSET` 不因参数复制导致额外内存峰值。
+- 现有 route、governance、ASKING、observability E2E 不回退。
+- benchmark 报告中单独标注 `RESP offset parser` 版本，和旧 parser 基线分组对比。
 
 ### Java 优化后的重新判定标准
 
