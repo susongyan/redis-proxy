@@ -85,6 +85,39 @@ class ConfigServiceTest {
     }
 
     @Test
+    void acceptsNamespaceAndPatternRouteRuleAndRejectsUnknownNamespace() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        ProxyConfig.Cluster gray = new ProxyConfig.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:6380"));
+        config.getBackends().setClusters(List.of(config.getBackends().getClusters().getFirst(), gray));
+        ProxyConfig.Namespace namespace = new ProxyConfig.Namespace();
+        namespace.setName("app-a");
+        namespace.setToken("token-a");
+        config.getGovernance().setNamespaces(List.of(namespace));
+        ProxyConfig.RouteRule rule = new ProxyConfig.RouteRule();
+        rule.setName("app-profile");
+        rule.setCluster("redis-b");
+        rule.setNamespace("app-a");
+        rule.setKeyPattern("user:*:profile");
+        rule.setTrafficPercent(25);
+        config.getRouting().setRules(List.of(rule));
+
+        ProxyConfig updated = service.update(config);
+        assertThat(updated.getRouting().getRules().getFirst().getNamespace()).isEqualTo("app-a");
+        assertThat(updated.getRouting().getRules().getFirst().getKeyPattern()).isEqualTo("user:*:profile");
+
+        ProxyConfig bad = service.get();
+        bad.getBackends().setClusters(List.of(bad.getBackends().getClusters().getFirst(), gray));
+        rule.setNamespace("missing");
+        bad.getRouting().setRules(List.of(rule));
+        assertThatThrownBy(() -> service.update(bad))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unknown namespace");
+    }
+
+    @Test
     void watchReturnsImmediatelyWhenCurrentEpochIsNewer() throws Exception {
         ConfigService service = new ConfigService();
         ProxyConfig config = service.get();

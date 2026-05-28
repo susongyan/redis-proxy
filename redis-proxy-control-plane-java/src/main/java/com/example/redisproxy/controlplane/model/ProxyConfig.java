@@ -98,15 +98,21 @@ public class ProxyConfig {
     public static class RouteRule {
         @NotBlank private String name;
         @NotBlank private String cluster;
+        private String namespace;
         private String keyPrefix;
+        private String keyPattern;
         private String hashTag;
         private int trafficPercent;
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
         public String getCluster() { return cluster; }
         public void setCluster(String cluster) { this.cluster = cluster; }
+        public String getNamespace() { return namespace; }
+        public void setNamespace(String namespace) { this.namespace = namespace; }
         public String getKeyPrefix() { return keyPrefix; }
         public void setKeyPrefix(String keyPrefix) { this.keyPrefix = keyPrefix; }
+        public String getKeyPattern() { return keyPattern; }
+        public void setKeyPattern(String keyPattern) { this.keyPattern = keyPattern; }
         public String getHashTag() { return hashTag; }
         public void setHashTag(String hashTag) { this.hashTag = hashTag; }
         public int getTrafficPercent() { return trafficPercent; }

@@ -165,6 +165,54 @@ func TestRouteRuleSelectsGrayClusterByPrefix(t *testing.T) {
 	}
 }
 
+func TestRouteRuleSelectsClusterByNamespacePatternAndHashTag(t *testing.T) {
+	rt, err := New(&config.Config{
+		Mode: "standalone",
+		Backends: config.BackendConfig{Clusters: []config.ClusterConfig{
+			{Name: "redis-a", Nodes: []string{"127.0.0.1:6379"}},
+			{Name: "redis-b", Nodes: []string{"127.0.0.1:6380"}},
+			{Name: "redis-c", Nodes: []string{"127.0.0.1:6381"}},
+		}},
+		Routing: config.RoutingConfig{
+			DefaultCluster: "redis-a",
+			Rules: []config.RouteRuleConfig{
+				{Name: "app-profile", Cluster: "redis-b", Namespace: "app-a", KeyPattern: "user:*:profile", TrafficPercent: 100},
+				{Name: "order-tag", Cluster: "redis-c", HashTag: "order", TrafficPercent: 100},
+			},
+		},
+		Governance: config.GovernanceConfig{
+			Namespaces: []config.NamespaceConfig{{Name: "app-a", Token: "token-a"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := rt.RouteDecisionForNamespace("app-a", protocolRequest("GET", "user:42:profile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Cluster != "redis-b" || decision.Rule != "app-profile" {
+		t.Fatalf("namespace pattern decision=%+v", decision)
+	}
+
+	decision, err = rt.RouteDecisionForNamespace("app-b", protocolRequest("GET", "user:42:profile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Cluster != "redis-a" || decision.Rule != "default" {
+		t.Fatalf("namespace mismatch decision=%+v", decision)
+	}
+
+	decision, err = rt.RouteDecision(protocolRequest("GET", "{order}:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Cluster != "redis-c" || decision.Rule != "order-tag" {
+		t.Fatalf("hash tag decision=%+v", decision)
+	}
+}
+
 func TestManagerApplyConfigAcceptsHigherEpochAndRejectsStale(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

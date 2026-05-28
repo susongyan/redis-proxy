@@ -54,7 +54,9 @@ type RoutingConfig struct {
 type RouteRuleConfig struct {
 	Name           string `yaml:"name" json:"name"`
 	Cluster        string `yaml:"cluster" json:"cluster"`
+	Namespace      string `yaml:"namespace" json:"namespace"`
 	KeyPrefix      string `yaml:"keyPrefix" json:"keyPrefix"`
+	KeyPattern     string `yaml:"keyPattern" json:"keyPattern"`
 	HashTag        string `yaml:"hashTag" json:"hashTag"`
 	TrafficPercent int    `yaml:"trafficPercent" json:"trafficPercent"`
 }
@@ -275,6 +277,10 @@ func (c *Config) Validate() error {
 	if !seen[c.Routing.DefaultCluster] {
 		return fmt.Errorf("default cluster %q not found", c.Routing.DefaultCluster)
 	}
+	namespaces := map[string]bool{}
+	for _, namespace := range c.Governance.Namespaces {
+		namespaces[namespace.Name] = true
+	}
 	for _, rule := range c.Routing.Rules {
 		if rule.Name == "" {
 			return errors.New("routing.rules.name is required")
@@ -285,8 +291,11 @@ func (c *Config) Validate() error {
 		if rule.TrafficPercent < 0 || rule.TrafficPercent > 100 {
 			return fmt.Errorf("routing rule %q trafficPercent must be between 0 and 100", rule.Name)
 		}
-		if rule.KeyPrefix == "" && rule.HashTag == "" {
-			return fmt.Errorf("routing rule %q must set keyPrefix or hashTag", rule.Name)
+		if rule.Namespace != "" && !namespaces[rule.Namespace] {
+			return fmt.Errorf("routing rule %q references unknown namespace %q", rule.Name, rule.Namespace)
+		}
+		if rule.Namespace == "" && rule.KeyPrefix == "" && rule.KeyPattern == "" && rule.HashTag == "" {
+			return fmt.Errorf("routing rule %q must set namespace, keyPrefix, keyPattern or hashTag", rule.Name)
 		}
 	}
 	if err := c.validateGovernance(); err != nil {

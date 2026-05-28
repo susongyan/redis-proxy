@@ -121,7 +121,7 @@ public class ProxyChannelHandler extends SimpleChannelInboundHandler<RespRequest
             LargeKeyTracker.Context largeKeyContext = largeKeyTracker.context(requestNamespace, request);
             largeKeyTracker.observeRequest(largeKeyContext, request.raw().readableBytes());
             SlowQueryTracker.Context slowQueryContext = slowQueryTracker.context(requestNamespace, request);
-            RouteDecision decision = routeResolver.routeDecision(request);
+            RouteDecision decision = routeResolver.routeDecision(request, requestNamespace);
             registry.counter("redis.proxy.route.decisions", "cluster", decision.cluster(), "rule", decision.rule()).increment();
             ByteBuf retryRaw = request.raw().retainedDuplicate();
             String backendNamespace = requestNamespace;

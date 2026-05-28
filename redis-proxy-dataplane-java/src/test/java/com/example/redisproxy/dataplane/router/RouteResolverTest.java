@@ -84,6 +84,40 @@ class RouteResolverTest {
     }
 
     @Test
+    void routeRuleSelectsClusterByNamespacePatternAndHashTag() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        ProxyProperties.Cluster redisB = new ProxyProperties.Cluster();
+        redisB.setName("redis-b");
+        redisB.setNodes(List.of("127.0.0.1:6380"));
+        ProxyProperties.Cluster redisC = new ProxyProperties.Cluster();
+        redisC.setName("redis-c");
+        redisC.setNodes(List.of("127.0.0.1:6381"));
+        properties.getBackends().setClusters(List.of(properties.getBackends().getClusters().getFirst(), redisB, redisC));
+        ProxyProperties.Namespace namespace = new ProxyProperties.Namespace();
+        namespace.setName("app-a");
+        namespace.setToken("token-a");
+        properties.getGovernance().setNamespaces(List.of(namespace));
+        ProxyProperties.RouteRule pattern = new ProxyProperties.RouteRule();
+        pattern.setName("app-profile");
+        pattern.setCluster("redis-b");
+        pattern.setNamespace("app-a");
+        pattern.setKeyPattern("user:*:profile");
+        pattern.setTrafficPercent(100);
+        ProxyProperties.RouteRule hashTag = new ProxyProperties.RouteRule();
+        hashTag.setName("order-tag");
+        hashTag.setCluster("redis-c");
+        hashTag.setHashTag("order");
+        hashTag.setTrafficPercent(100);
+        properties.getRouting().setRules(List.of(pattern, hashTag));
+
+        RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+
+        assertThat(resolver.routeDecision(request("GET", "user:42:profile"), "app-a").cluster()).isEqualTo("redis-b");
+        assertThat(resolver.routeDecision(request("GET", "user:42:profile"), "app-b").cluster()).isEqualTo("redis-a");
+        assertThat(resolver.routeDecision(request("GET", "{order}:1")).cluster()).isEqualTo("redis-c");
+    }
+
+    @Test
     void applyConfigAcceptsHigherEpochAndRejectsStale() {
         ProxyProperties properties = properties("127.0.0.1:6379");
         RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());

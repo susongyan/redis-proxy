@@ -210,7 +210,7 @@ func (s *Server) handle(conn net.Conn) {
 		slowCtx := s.slowQueries.Context(namespace, req)
 		requestNamespace := namespace
 
-		decision, err := s.router.RouteDecision(req)
+		decision, err := s.router.RouteDecisionForNamespace(requestNamespace, req)
 		if err != nil {
 			s.nsLimiter.finishRequest(requestNamespace)
 			s.metrics.Errors.WithLabelValues("route").Inc()

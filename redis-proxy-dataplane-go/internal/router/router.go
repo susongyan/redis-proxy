@@ -101,6 +101,10 @@ func (m *Manager) RouteDecision(req protocol.Request) (Decision, error) {
 	return m.Current().RouteDecision(req)
 }
 
+func (m *Manager) RouteDecisionForNamespace(namespace string, req protocol.Request) (Decision, error) {
+	return m.Current().RouteDecisionForNamespace(namespace, req)
+}
+
 func (m *Manager) UpdateMoved(response []byte, pools *backend.Pools) {
 	m.Current().UpdateMoved(response, pools)
 }
@@ -195,7 +199,11 @@ func (r *Router) Route(req protocol.Request) (string, error) {
 }
 
 func (r *Router) RouteDecision(req protocol.Request) (Decision, error) {
-	clusterName, ruleName := r.selectCluster(req)
+	return r.RouteDecisionForNamespace("", req)
+}
+
+func (r *Router) RouteDecisionForNamespace(namespace string, req protocol.Request) (Decision, error) {
+	clusterName, ruleName := r.selectCluster(namespace, req)
 	cluster, ok := r.clusters[clusterName]
 	if !ok {
 		return Decision{}, fmt.Errorf("route cluster %q not found", clusterName)
@@ -509,27 +517,66 @@ func (r *Router) ClusterNodes(clusterName string) []string {
 	return append([]string(nil), cluster.Nodes...)
 }
 
-func (r *Router) selectCluster(req protocol.Request) (string, string) {
+func (r *Router) selectCluster(namespace string, req protocol.Request) (string, string) {
 	rawKey, ok := RawKey(req.Args)
-	if !ok {
-		return r.defaultCluster, "default"
+	var tag []byte
+	if ok {
+		tag = hashTag(rawKey)
 	}
-	tag := hashTag(rawKey)
 	for _, rule := range r.rules {
 		if rule.TrafficPercent <= 0 {
 			continue
 		}
-		if rule.KeyPrefix != "" && !bytes.HasPrefix(rawKey, []byte(rule.KeyPrefix)) {
+		if rule.Namespace != "" && rule.Namespace != namespace {
 			continue
 		}
-		if rule.HashTag != "" && string(tag) != rule.HashTag {
+		if rule.KeyPrefix != "" && (!ok || !bytes.HasPrefix(rawKey, []byte(rule.KeyPrefix))) {
 			continue
 		}
-		if rule.TrafficPercent >= 100 || int(crc16(rawKey)%100) < rule.TrafficPercent {
+		if rule.KeyPattern != "" && (!ok || !matchGlob([]byte(rule.KeyPattern), rawKey)) {
+			continue
+		}
+		if rule.HashTag != "" && (!ok || string(tag) != rule.HashTag) {
+			continue
+		}
+		sampleKey := rawKey
+		if len(sampleKey) == 0 {
+			sampleKey = []byte(namespace)
+		}
+		if rule.TrafficPercent >= 100 || int(crc16(sampleKey)%100) < rule.TrafficPercent {
 			return rule.Cluster, rule.Name
 		}
 	}
 	return r.defaultCluster, "default"
+}
+
+func matchGlob(pattern []byte, value []byte) bool {
+	p, v := 0, 0
+	star, match := -1, 0
+	for v < len(value) {
+		if p < len(pattern) && (pattern[p] == '?' || pattern[p] == value[v]) {
+			p++
+			v++
+			continue
+		}
+		if p < len(pattern) && pattern[p] == '*' {
+			star = p
+			match = v
+			p++
+			continue
+		}
+		if star >= 0 {
+			p = star + 1
+			match++
+			v = match
+			continue
+		}
+		return false
+	}
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
 }
 
 func (r *Router) inheritSlots(old *Router) {

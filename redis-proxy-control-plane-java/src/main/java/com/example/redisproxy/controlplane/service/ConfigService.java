@@ -199,6 +199,9 @@ public class ConfigService {
             throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
         }
         validateAnalysis(config.getAnalysis());
+        List<String> namespaceNames = config.getGovernance().getNamespaces().stream()
+                .map(ProxyConfig.Namespace::getName)
+                .toList();
         for (ProxyConfig.RouteRule rule : config.getRouting().getRules()) {
             if (!clusterNames.contains(rule.getCluster())) {
                 throw new IllegalArgumentException("routing rule " + rule.getName() + " references unknown cluster");
@@ -206,10 +209,15 @@ public class ConfigService {
             if (rule.getTrafficPercent() < 0 || rule.getTrafficPercent() > 100) {
                 throw new IllegalArgumentException("routing rule " + rule.getName() + " trafficPercent must be between 0 and 100");
             }
+            boolean hasNamespace = rule.getNamespace() != null && !rule.getNamespace().isBlank();
             boolean hasKeyPrefix = rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank();
+            boolean hasKeyPattern = rule.getKeyPattern() != null && !rule.getKeyPattern().isBlank();
             boolean hasHashTag = rule.getHashTag() != null && !rule.getHashTag().isBlank();
-            if (!hasKeyPrefix && !hasHashTag) {
-                throw new IllegalArgumentException("routing rule " + rule.getName() + " must set keyPrefix or hashTag");
+            if (hasNamespace && !namespaceNames.contains(rule.getNamespace())) {
+                throw new IllegalArgumentException("routing rule " + rule.getName() + " references unknown namespace");
+            }
+            if (!hasNamespace && !hasKeyPrefix && !hasKeyPattern && !hasHashTag) {
+                throw new IllegalArgumentException("routing rule " + rule.getName() + " must set namespace, keyPrefix, keyPattern or hashTag");
             }
         }
         validateGovernance(config.getGovernance());
@@ -337,7 +345,7 @@ public class ConfigService {
 
     private static String summarizeRules(ProxyConfig config) {
         return config.getRouting().getRules().stream()
-                .map(rule -> rule.getName() + ":" + rule.getCluster() + ":" + rule.getKeyPrefix() + ":" + rule.getHashTag() + ":" + rule.getTrafficPercent())
+                .map(rule -> rule.getName() + ":" + rule.getCluster() + ":" + rule.getNamespace() + ":" + rule.getKeyPrefix() + ":" + rule.getKeyPattern() + ":" + rule.getHashTag() + ":" + rule.getTrafficPercent())
                 .toList()
                 .toString();
     }
@@ -485,7 +493,9 @@ public class ConfigService {
             ProxyConfig.RouteRule copy = new ProxyConfig.RouteRule();
             copy.setName(rule.getName());
             copy.setCluster(rule.getCluster());
+            copy.setNamespace(rule.getNamespace());
             copy.setKeyPrefix(rule.getKeyPrefix());
+            copy.setKeyPattern(rule.getKeyPattern());
             copy.setHashTag(rule.getHashTag());
             copy.setTrafficPercent(rule.getTrafficPercent());
             return copy;

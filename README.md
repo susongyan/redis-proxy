@@ -90,12 +90,12 @@ Rust 路线：
 - 简化 slot 到节点映射。
 - MOVED / ASK 指标暴露。
 
-后续路线：
+增强路线：
 
 1. 接入真实 `CLUSTER SLOTS` 拓扑刷新。
 2. 支持 routeEpoch，本地不可变路由快照。
-3. 支持按 namespace / key pattern / hash tag 路由到不同集群。
-4. 支持灰度切流、按比例切流和快速回滚。
+3. 已支持按 namespace / key pattern / hash tag 路由到不同集群。
+4. 已支持灰度切流、按比例切流和基于更大 routeEpoch 的快速回滚。
 5. 支持同城双活场景下的主读写集群切换。
 
 同城双活建议把“决策”和“执行”分离：
@@ -169,8 +169,14 @@ routing:
   rules:
     - name: "gray-user-cache"
       cluster: "redis-b"
+      namespace: "app-a"
       keyPrefix: "user:"
+      keyPattern: "user:*:profile"
       trafficPercent: 10
+    - name: "order-hash-tag"
+      cluster: "redis-b"
+      hashTag: "order"
+      trafficPercent: 100
 
 limits:
   maxPipelineDepth: 1024
@@ -233,7 +239,9 @@ governance:
 - 启动强校验，非法配置 fail fast。
 - 数据面运行时使用本地不可变快照。
 - `routeEpoch` 表示当前路由快照版本；数据面按快照进行原子路由选择，不在单请求中混用多个版本。
-- `routing.rules` 按顺序匹配，支持 `keyPrefix` / `hashTag` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
+- `routing.rules` 按顺序匹配，支持 `namespace` / `keyPrefix` / `keyPattern` / `hashTag` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
+- `namespace` 来自连接上 `AUTH <namespace> <token>` 绑定的身份；未认证连接只能命中未设置 namespace 的路由规则。
+- `keyPattern` 使用受限 glob 语义，支持 `*` 和 `?`，不是 regex；请求热路径优先使用 `keyPrefix`。
 - 控制面生成同结构配置；开启 `controlPlane.enabled` 后，数据面通过 `/api/v1/config/watch` 长轮询消费新快照。
 - `controlPlane.pollIntervalSeconds` 在长轮询模式下表示异常后的重试间隔；正常无变更时控制面返回 `204`，数据面立即续订下一次 watch。
 - `controlPlane.watchTimeoutSeconds` 表示单次 watch 的服务端等待窗口；`requestTimeoutMillis` 是客户端请求超时余量。
@@ -581,16 +589,16 @@ Slot cache 刷新策略：
 
 第二阶段后半：路由发布基础
 
-状态：长轮询式动态路由快照发布已完成；显式回滚、发布审计和灰度发布平台化仍待实现。
+状态：长轮询式动态路由快照发布已完成；namespace / key pattern / hash tag 路由和显式回滚已具备基础能力，发布审计和灰度发布平台化仍待增强。
 
 已完成：
 
 1. Go / Java 数据面和 Java 控制面均支持统一 `routing.rules` 配置模型。
-2. `routing.rules` 支持按 `keyPrefix` / `hashTag` 匹配，并通过 key 的稳定 hash 做百分比灰度切流。
+2. `routing.rules` 支持按 `namespace` / `keyPrefix` / `keyPattern` / `hashTag` 匹配，并通过 key 的稳定 hash 做百分比灰度切流。
 3. Go / Java 数据面均支持多 backend cluster 的路由选择；命中灰度规则时路由到规则指定 cluster，否则回到 `defaultCluster`。
 4. cluster 模式下，Go / Java 数据面会按参与路由的 cluster 维护 slot cache 和 readiness 判断。
-5. 控制面校验 route rule 引用的 cluster、流量百分比和 key 匹配条件，避免生成不可执行配置。
-6. 单元测试已覆盖 Go / Java 灰度路由选择和控制面 route rule 合法性校验。
+5. 控制面校验 route rule 引用的 cluster、namespace、流量百分比和 key 匹配条件，避免生成不可执行配置。
+6. 单元测试已覆盖 Go / Java namespace、key pattern、hash tag、灰度路由选择和控制面 route rule 合法性校验。
 7. Java 控制面提供 `GET /api/v1/config/watch?epoch=<current>&timeoutSeconds=<n>` 长轮询接口；无更新返回 `204`，有更大 `routeEpoch` 立即返回新配置。
 8. Go / Java 数据面均从控制面长轮询 route snapshot，只接受单调递增的 `routeEpoch`，并用原子快照替换保证单请求只读一个版本。
 9. Go / Java 数据面新增 `/debug/route-snapshot`，可查看当前生效 epoch、defaultCluster、rules 和参与路由的 clusters。
@@ -602,12 +610,26 @@ Slot cache 刷新策略：
 15. 控制面 `/api/v1/routes/status` 提供当前发布期望态；灰度真实命中量仍以数据面 Prometheus route decision 指标为准。
 16. 已固化 `scripts/e2e-dynamic-route.sh`、`scripts/e2e-asking.sh` 和 `scripts/e2e-cluster-failover.sh`。
 
+多 Proxy 配置收敛观测：
+
+- 控制面发布成功只表示期望态已经更新，不表示所有数据面实例都已拿到并生效相同配置。
+- 多台 proxy 的收敛判断建议使用 `routeEpoch + configHash + proxyId` 三元组：`routeEpoch` 判断版本新旧，`configHash` 判断配置内容一致性，`proxyId` 标识具体实例。
+- 后续数据面 `/debug/route-snapshot` 应返回 `proxyId`、`epoch`、`configHash`、`lastApplyResult`、`lastApplyTime` 和 `lastPollTime`，用于定位未收敛、应用失败或长轮询异常的实例。
+- Prometheus 继续只暴露低基数指标，例如 `route_epoch`、`route_snapshot_update_total` 和 `route_snapshot_last_success_timestamp_seconds`；不建议把 `configHash` 作为高频 metrics label。
+- 控制面应保存当前发布期望态：`expectedVersionId`、`expectedRouteEpoch`、`expectedConfigHash`，并由 Collector 定时拉取每台 proxy 的 `/debug/route-snapshot`。
+- 后续新增 `GET /api/v1/routes/convergence`，返回整体收敛状态和逐实例明细。建议状态包括 `CONVERGED`、`PARTIAL`、`STALE`、`DRIFT` 和 `UNREACHABLE`。
+- 灰度继续扩大比例或执行自动化双活切换前，建议要求所有健康 proxy 达到 `CONVERGED`；若出现 `DRIFT`，应暂停继续发布并优先排查配置生成或数据面应用路径。
+
 待完成：
 
-1. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
-2. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
-3. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
-4. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
+1. 增加数据面稳定 `proxyId` 配置，并在 `/debug/route-snapshot` 返回配置收敛字段。
+2. 增加控制面发布配置 hash 计算和保存，形成 `expectedVersionId + expectedRouteEpoch + expectedConfigHash` 期望态。
+3. 扩展控制面 Collector，定时拉取每台 proxy 的 `/debug/route-snapshot`。
+4. 增加 `GET /api/v1/routes/convergence` 查询 API 和多 proxy 收敛 E2E 验证。
+5. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
+6. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
+7. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
+8. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
 
 第三阶段：治理能力
 

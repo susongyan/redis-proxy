@@ -22,6 +22,9 @@ class RespRequestTest {
             assertThat(request.argUtf8(1)).isEqualTo("app:{user}:1");
             assertThat(request.arg(1).startsWithUtf8("app:")).isTrue();
             assertThat(request.arg(1).hashTagEqualsUtf8("user")).isTrue();
+            assertThat(request.arg(1).matchesGlobUtf8("app:*:1")).isTrue();
+            assertThat(request.arg(1).matchesGlobUtf8("app:?user?:1")).isTrue();
+            assertThat(request.arg(1).matchesGlobUtf8("app:?user?:2")).isFalse();
             assertThat(request.argBytes(2)).isEqualTo("value".getBytes(StandardCharsets.UTF_8));
         } finally {
             request.release();

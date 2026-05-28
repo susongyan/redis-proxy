@@ -79,6 +79,42 @@ public record ArgRef(ByteBuf raw, int offset, int length) {
         return true;
     }
 
+    public boolean matchesGlobUtf8(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            return true;
+        }
+        byte[] expected = pattern.getBytes(StandardCharsets.UTF_8);
+        int p = 0;
+        int v = 0;
+        int star = -1;
+        int match = 0;
+        while (v < length) {
+            byte actual = raw.getByte(offset + v);
+            if (p < expected.length && (expected[p] == '?' || expected[p] == actual)) {
+                p++;
+                v++;
+                continue;
+            }
+            if (p < expected.length && expected[p] == '*') {
+                star = p;
+                match = v;
+                p++;
+                continue;
+            }
+            if (star >= 0) {
+                p = star + 1;
+                match++;
+                v = match;
+                continue;
+            }
+            return false;
+        }
+        while (p < expected.length && expected[p] == '*') {
+            p++;
+        }
+        return p == expected.length;
+    }
+
     public int slot() {
         return com.example.redisproxy.dataplane.router.RedisSlot.slot(raw, offset, length);
     }

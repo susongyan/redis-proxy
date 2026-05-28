@@ -54,8 +54,12 @@ public class RouteResolver {
     }
 
     public RouteDecision routeDecision(RespRequest request) {
+        return routeDecision(request, "");
+    }
+
+    public RouteDecision routeDecision(RespRequest request, String namespace) {
         Snapshot current = snapshot.get();
-        SelectedCluster selected = selectCluster(current, request);
+        SelectedCluster selected = selectCluster(current, namespace == null ? "" : namespace, request);
         ProxyProperties.Cluster cluster = current.clusters().get(selected.cluster());
         if (cluster == null) {
             throw new IllegalArgumentException("route cluster not found: " + selected.cluster());
@@ -330,26 +334,34 @@ public class RouteResolver {
         return List.copyOf(seen.keySet());
     }
 
-    private SelectedCluster selectCluster(Snapshot current, RespRequest request) {
-        if (request.argCount() < 2) {
-            return new SelectedCluster(current.properties().getRouting().getDefaultCluster(), "default");
-        }
-        ArgRef rawKey = request.arg(1);
+    private SelectedCluster selectCluster(Snapshot current, String namespace, RespRequest request) {
+        ArgRef rawKey = request.argCount() < 2 ? null : request.arg(1);
         for (ProxyProperties.RouteRule rule : current.properties().getRouting().getRules()) {
             if (rule.getTrafficPercent() <= 0) {
                 continue;
             }
-            if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && !rawKey.startsWithUtf8(rule.getKeyPrefix())) {
+            if (rule.getNamespace() != null && !rule.getNamespace().isBlank() && !rule.getNamespace().equals(namespace)) {
                 continue;
             }
-            if (rule.getHashTag() != null && !rule.getHashTag().isBlank() && !rawKey.hashTagEqualsUtf8(rule.getHashTag())) {
+            if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && (rawKey == null || !rawKey.startsWithUtf8(rule.getKeyPrefix()))) {
                 continue;
             }
-            if (rule.getTrafficPercent() >= 100 || rawKey.slot() % 100 < rule.getTrafficPercent()) {
+            if (rule.getKeyPattern() != null && !rule.getKeyPattern().isBlank() && (rawKey == null || !rawKey.matchesGlobUtf8(rule.getKeyPattern()))) {
+                continue;
+            }
+            if (rule.getHashTag() != null && !rule.getHashTag().isBlank() && (rawKey == null || !rawKey.hashTagEqualsUtf8(rule.getHashTag()))) {
+                continue;
+            }
+            int sample = rawKey == null ? stablePercent(namespace) : rawKey.slot() % 100;
+            if (rule.getTrafficPercent() >= 100 || sample < rule.getTrafficPercent()) {
                 return new SelectedCluster(rule.getCluster(), rule.getName());
             }
         }
         return new SelectedCluster(current.properties().getRouting().getDefaultCluster(), "default");
+    }
+
+    private static int stablePercent(String value) {
+        return RedisSlot.slot((value == null ? "" : value).getBytes(StandardCharsets.UTF_8)) % 100;
     }
 
     private MovedTarget normalizeMovedAddr(String addr) {

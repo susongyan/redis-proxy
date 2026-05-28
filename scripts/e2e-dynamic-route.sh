@@ -47,7 +47,7 @@ cat >"${LOG_DIR}/config-epoch1.json" <<'JSON'
 {"server":{"listen":"0.0.0.0:6379"},"admin":{"listen":"0.0.0.0:8080"},"mode":"standalone","backends":{"clusters":[{"name":"redis-a","nodes":["127.0.0.1:63800"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}},{"name":"redis-b","nodes":["127.0.0.1:63801"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}}]},"routing":{"defaultCluster":"redis-a","routeEpoch":1,"clusterSlotsRefreshIntervalSeconds":30,"rules":[]},"limits":{"maxPipelineDepth":1024,"maxRequestBytes":10485760,"maxResponseBytes":104857600}}
 JSON
 cat >"${LOG_DIR}/publish-epoch2.json" <<'JSON'
-{"operator":"e2e","reason":"dynamic route switch","config":{"server":{"listen":"0.0.0.0:6379"},"admin":{"listen":"0.0.0.0:8080"},"mode":"standalone","backends":{"clusters":[{"name":"redis-a","nodes":["127.0.0.1:63800"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}},{"name":"redis-b","nodes":["127.0.0.1:63801"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}}]},"routing":{"defaultCluster":"redis-a","routeEpoch":2,"clusterSlotsRefreshIntervalSeconds":30,"rules":[{"name":"gray-user","cluster":"redis-b","keyPrefix":"user:","trafficPercent":100}]},"limits":{"maxPipelineDepth":1024,"maxRequestBytes":10485760,"maxResponseBytes":104857600}}}
+{"operator":"e2e","reason":"dynamic route switch","config":{"server":{"listen":"0.0.0.0:6379"},"admin":{"listen":"0.0.0.0:8080"},"mode":"standalone","backends":{"clusters":[{"name":"redis-a","nodes":["127.0.0.1:63800"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}},{"name":"redis-b","nodes":["127.0.0.1:63801"],"pool":{"connectionsPerNode":2,"maxInflightPerConnection":128}}]},"routing":{"defaultCluster":"redis-a","routeEpoch":2,"clusterSlotsRefreshIntervalSeconds":30,"rules":[{"name":"gray-user-profile","cluster":"redis-b","namespace":"app-a","keyPattern":"user:*:profile","trafficPercent":100}]},"governance":{"enabled":true,"requireAuth":true,"namespaces":[{"name":"app-a","token":"token-a","readOnly":false,"allowedKeyPrefixes":[],"limits":{"maxConnections":0,"maxQps":0,"maxInflight":0}}]},"limits":{"maxPipelineDepth":1024,"maxRequestBytes":10485760,"maxResponseBytes":104857600}}}
 JSON
 
 curl -fsS -X PUT -H 'Content-Type: application/json' --data-binary @"${LOG_DIR}/config-epoch1.json" http://127.0.0.1:8090/api/v1/config >/dev/null
@@ -122,10 +122,10 @@ for i in {1..50}; do
 done
 [[ "${epoch}" == "2" ]] || { curl -fsS http://127.0.0.1:8080/debug/route-snapshot; exit 1; }
 
-docker run --rm "${REDIS_IMAGE}" redis-cli -h host.docker.internal -p 6379 set order:1 a >/dev/null
-docker run --rm "${REDIS_IMAGE}" redis-cli -h host.docker.internal -p 6379 set user:1 b >/dev/null
+docker run --rm "${REDIS_IMAGE}" redis-cli -2 -h host.docker.internal -p 6379 --user app-a -a token-a --no-auth-warning set order:1 a >/dev/null
+docker run --rm "${REDIS_IMAGE}" redis-cli -2 -h host.docker.internal -p 6379 --user app-a -a token-a --no-auth-warning set user:1:profile b >/dev/null
 [[ "$(docker run --rm "${REDIS_IMAGE}" redis-cli -h host.docker.internal -p 63800 get order:1)" == "a" ]]
-[[ "$(docker run --rm "${REDIS_IMAGE}" redis-cli -h host.docker.internal -p 63801 get user:1)" == "b" ]]
+[[ "$(docker run --rm "${REDIS_IMAGE}" redis-cli -h host.docker.internal -p 63801 get user:1:profile)" == "b" ]]
 
 if curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @"${LOG_DIR}/publish-epoch2.json" http://127.0.0.1:8090/api/v1/config/publish >/dev/null 2>&1; then
   echo "stale publish unexpectedly succeeded" >&2

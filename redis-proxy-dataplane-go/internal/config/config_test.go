@@ -77,14 +77,31 @@ func TestValidateRejectsRouteRuleUnknownCluster(t *testing.T) {
 func TestValidateAcceptsRouteRule(t *testing.T) {
 	cfg := validConfig()
 	cfg.Backends.Clusters = append(cfg.Backends.Clusters, ClusterConfig{Name: "redis-b", Nodes: []string{"127.0.0.1:7001"}})
+	cfg.Governance.Namespaces = []NamespaceConfig{{Name: "app-a", Token: "token-a"}}
 	cfg.Routing.Rules = []RouteRuleConfig{{
 		Name:           "gray",
 		Cluster:        "redis-b",
+		Namespace:      "app-a",
+		KeyPattern:     "user:*:profile",
 		HashTag:        "tenant-a",
 		TrafficPercent: 25,
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateRejectsRouteRuleUnknownNamespace(t *testing.T) {
+	cfg := validConfig()
+	cfg.Backends.Clusters = append(cfg.Backends.Clusters, ClusterConfig{Name: "redis-b", Nodes: []string{"127.0.0.1:7001"}})
+	cfg.Routing.Rules = []RouteRuleConfig{{
+		Name:           "gray",
+		Cluster:        "redis-b",
+		Namespace:      "missing",
+		TrafficPercent: 25,
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unknown namespace validation error")
 	}
 }
 
