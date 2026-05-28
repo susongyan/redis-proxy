@@ -223,6 +223,8 @@ class ConfigServiceTest {
         assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("routing.routeEpoch"));
         assertThat(service.version(2).operator()).isEqualTo("alice");
         assertThat(service.routeStatus().currentVersionId()).isEqualTo(2);
+        assertThat(service.routeStatus().expectedRouteEpoch()).isEqualTo(2);
+        assertThat(service.routeStatus().expectedConfigHash()).startsWith("sha256:");
         assertThat(service.routeStatus().lastPublished().reason()).isEqualTo("publish");
     }
 

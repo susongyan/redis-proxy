@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/example/redis-proxy-dataplane-go/internal/backend"
 	"github.com/example/redis-proxy-dataplane-go/internal/config"
@@ -20,15 +21,20 @@ const Slots = 16384
 var clusterSlotsCommand = []byte("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n")
 
 type Router struct {
-	mode           string
-	epoch          int64
-	defaultCluster string
-	clusters       map[string]config.ClusterConfig
-	rules          []config.RouteRuleConfig
-	limits         config.LimitsConfig
-	analysis       config.AnalysisConfig
-	governance     config.GovernanceConfig
-	states         map[string]*clusterState
+	proxyID         string
+	configHash      string
+	lastApplyResult atomic.Value
+	lastApplyTime   atomic.Int64
+	lastPollTime    atomic.Int64
+	mode            string
+	epoch           int64
+	defaultCluster  string
+	clusters        map[string]config.ClusterConfig
+	rules           []config.RouteRuleConfig
+	limits          config.LimitsConfig
+	analysis        config.AnalysisConfig
+	governance      config.GovernanceConfig
+	states          map[string]*clusterState
 }
 
 type Decision struct {
@@ -39,12 +45,17 @@ type Decision struct {
 }
 
 type SnapshotInfo struct {
-	Epoch          int64                    `json:"epoch"`
-	Mode           string                   `json:"mode"`
-	DefaultCluster string                   `json:"defaultCluster"`
-	RouteClusters  []string                 `json:"routeClusters"`
-	Rules          []config.RouteRuleConfig `json:"rules"`
-	Governance     map[string]any           `json:"governance"`
+	ProxyID         string                   `json:"proxyId"`
+	Epoch           int64                    `json:"epoch"`
+	ConfigHash      string                   `json:"configHash"`
+	LastApplyResult string                   `json:"lastApplyResult"`
+	LastApplyTime   int64                    `json:"lastApplyTime"`
+	LastPollTime    int64                    `json:"lastPollTime"`
+	Mode            string                   `json:"mode"`
+	DefaultCluster  string                   `json:"defaultCluster"`
+	RouteClusters   []string                 `json:"routeClusters"`
+	Rules           []config.RouteRuleConfig `json:"rules"`
+	Governance      map[string]any           `json:"governance"`
 }
 
 type Manager struct {
@@ -66,7 +77,9 @@ func New(cfg *config.Config) (*Router, error) {
 	if _, ok := clusters[cfg.Routing.DefaultCluster]; !ok {
 		return nil, fmt.Errorf("default cluster %q not found", cfg.Routing.DefaultCluster)
 	}
-	return &Router{
+	rt := &Router{
+		proxyID:        cfg.Instance.ProxyID,
+		configHash:     config.SnapshotHash(cfg),
 		mode:           cfg.Mode,
 		epoch:          cfg.Routing.RouteEpoch,
 		defaultCluster: cfg.Routing.DefaultCluster,
@@ -76,7 +89,10 @@ func New(cfg *config.Config) (*Router, error) {
 		analysis:       cfg.Analysis,
 		governance:     cfg.Governance,
 		states:         states,
-	}, nil
+	}
+	rt.lastApplyResult.Store("startup")
+	rt.lastApplyTime.Store(time.Now().Unix())
+	return rt, nil
 }
 
 func NewManager(cfg *config.Config) (*Manager, error) {
@@ -121,6 +137,19 @@ func (m *Manager) SnapshotInfo() SnapshotInfo {
 	return m.Current().SnapshotInfo()
 }
 
+func (m *Manager) MarkPoll() {
+	m.Current().lastPollTime.Store(time.Now().Unix())
+}
+
+func (m *Manager) RecordApplyResult(result string) {
+	if result == "" {
+		result = "error"
+	}
+	current := m.Current()
+	current.lastApplyResult.Store(result)
+	current.lastApplyTime.Store(time.Now().Unix())
+}
+
 func (m *Manager) Governance() config.GovernanceConfig {
 	return m.Current().governance
 }
@@ -159,30 +188,40 @@ func (m *Manager) ClusterSlotOwners(clusterName string) []string {
 
 func (m *Manager) ApplyConfig(cfg *config.Config, pools *backend.Pools) (string, error) {
 	config.ApplyDefaults(cfg)
+	cfg.Instance.ProxyID = m.Current().proxyID
 	if err := cfg.Validate(); err != nil {
+		m.RecordApplyResult("invalid")
 		return "invalid", err
 	}
 	old := m.Current()
 	if cfg.Mode != old.mode {
+		m.RecordApplyResult("runtime_shape")
 		return "runtime_shape", fmt.Errorf("mode changes are not hot reloadable")
 	}
 	if cfg.Routing.RouteEpoch <= old.epoch {
+		m.RecordApplyResult("stale_epoch")
 		return "stale_epoch", fmt.Errorf("routeEpoch %d must be greater than current %d", cfg.Routing.RouteEpoch, old.epoch)
 	}
 	for _, cluster := range cfg.Backends.Clusters {
 		for _, node := range cluster.Nodes {
 			if err := pools.Ensure(node); err != nil {
+				m.RecordApplyResult("backend_ensure")
 				return "backend_ensure", err
 			}
 		}
 	}
 	next, err := New(cfg)
 	if err != nil {
+		m.RecordApplyResult("invalid")
 		return "invalid", err
 	}
 	next.inheritSlots(old)
+	next.lastPollTime.Store(old.lastPollTime.Load())
+	next.lastApplyResult.Store("success")
+	next.lastApplyTime.Store(time.Now().Unix())
 	if cfg.Mode == "cluster" {
 		if err := next.RefreshSlots(pools); err != nil {
+			m.RecordApplyResult("slot_refresh")
 			return "slot_refresh", err
 		}
 	}
@@ -499,13 +538,19 @@ func (r *Router) RouteClusters() []string {
 }
 
 func (r *Router) SnapshotInfo() SnapshotInfo {
+	lastApplyResult, _ := r.lastApplyResult.Load().(string)
 	return SnapshotInfo{
-		Epoch:          r.epoch,
-		Mode:           r.mode,
-		DefaultCluster: r.defaultCluster,
-		RouteClusters:  r.RouteClusters(),
-		Rules:          append([]config.RouteRuleConfig(nil), r.rules...),
-		Governance:     governance.Summary(r.governance),
+		ProxyID:         r.proxyID,
+		Epoch:           r.epoch,
+		ConfigHash:      r.configHash,
+		LastApplyResult: lastApplyResult,
+		LastApplyTime:   r.lastApplyTime.Load(),
+		LastPollTime:    r.lastPollTime.Load(),
+		Mode:            r.mode,
+		DefaultCluster:  r.defaultCluster,
+		RouteClusters:   r.RouteClusters(),
+		Rules:           append([]config.RouteRuleConfig(nil), r.rules...),
+		Governance:      governance.Summary(r.governance),
 	}
 }
 

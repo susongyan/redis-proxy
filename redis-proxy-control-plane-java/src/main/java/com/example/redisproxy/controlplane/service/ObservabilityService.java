@@ -4,6 +4,10 @@ import com.example.redisproxy.controlplane.model.observability.ObservabilityMode
 import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.HistoryPoint;
 import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.HistoryResponse;
 import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.LargeKeyObservation;
+import com.example.redisproxy.controlplane.model.RouteStatus;
+import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.RouteConvergence;
+import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.RouteConvergenceInstance;
+import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.RouteSnapshotObservation;
 import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.SlowQueryObservation;
 import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.Summary;
 import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.TargetStatus;
@@ -260,6 +264,49 @@ public class ObservabilityService {
         collectSafely(proxyId);
     }
 
+    public RouteConvergence routeConvergence(RouteStatus expected) {
+        List<RouteConvergenceInstance> instances = targets.values().stream()
+                .map(target -> convergenceInstance(target, expected))
+                .sorted(Comparator.comparing(RouteConvergenceInstance::proxyId))
+                .toList();
+        int converged = 0;
+        int stale = 0;
+        int drift = 0;
+        int unreachable = 0;
+        for (RouteConvergenceInstance instance : instances) {
+            switch (instance.status()) {
+                case "CONVERGED" -> converged++;
+                case "STALE" -> stale++;
+                case "DRIFT" -> drift++;
+                case "UNREACHABLE" -> unreachable++;
+                default -> {}
+            }
+        }
+        String status;
+        if (unreachable > 0) {
+            status = "UNREACHABLE";
+        } else if (drift > 0) {
+            status = "DRIFT";
+        } else if (stale > 0) {
+            status = converged > 0 ? "PARTIAL" : "STALE";
+        } else if (converged == instances.size()) {
+            status = "CONVERGED";
+        } else {
+            status = "PARTIAL";
+        }
+        return new RouteConvergence(
+                expected.expectedVersionId(),
+                expected.expectedRouteEpoch(),
+                expected.expectedConfigHash(),
+                status,
+                instances.size(),
+                converged,
+                stale,
+                drift,
+                unreachable,
+                instances);
+    }
+
     @PreDestroy
     public void stop() {
         scheduler.shutdownNow();
@@ -284,6 +331,51 @@ public class ObservabilityService {
                 snapshot == null ? "not collected" : snapshot.error());
     }
 
+    private RouteConvergenceInstance convergenceInstance(ObservabilityTarget target, RouteStatus expected) {
+        Snapshot snapshot = snapshots.get(target.getProxyId());
+        if (snapshot == null || !snapshot.healthy() || snapshot.routeSnapshot() == null) {
+            return new RouteConvergenceInstance(
+                    target.getProxyId(),
+                    target.getDataplane(),
+                    target.getAdminUrl(),
+                    false,
+                    0,
+                    "",
+                    "",
+                    0,
+                    0,
+                    snapshot == null ? null : snapshot.collectedAt(),
+                    "UNREACHABLE",
+                    snapshot == null ? "not collected" : snapshot.error());
+        }
+        RouteSnapshotObservation route = snapshot.routeSnapshot();
+        String status = "CONVERGED";
+        String reason = "";
+        if (route.epoch() < expected.expectedRouteEpoch()) {
+            status = "STALE";
+            reason = "route epoch is behind expected";
+        } else if (route.epoch() == expected.expectedRouteEpoch() && !Objects.equals(route.configHash(), expected.expectedConfigHash())) {
+            status = "DRIFT";
+            reason = "route epoch matches but config hash differs";
+        } else if (route.epoch() > expected.expectedRouteEpoch()) {
+            status = "DRIFT";
+            reason = "route epoch is ahead of expected";
+        }
+        return new RouteConvergenceInstance(
+                target.getProxyId(),
+                target.getDataplane(),
+                target.getAdminUrl(),
+                true,
+                route.epoch(),
+                route.configHash(),
+                route.lastApplyResult(),
+                route.lastApplyTime(),
+                route.lastPollTime(),
+                route.collectedAt(),
+                status,
+                reason);
+    }
+
     private void collectSafely(String proxyId) {
         ObservabilityTarget target = targets.get(proxyId);
         if (target == null) {
@@ -300,7 +392,8 @@ public class ObservabilityService {
             List<HotKeyObservation> hotKeys = previous == null ? List.of() : previous.hotKeys();
             List<LargeKeyObservation> largeKeys = previous == null ? List.of() : previous.largeKeys();
             List<SlowQueryObservation> slowQueries = previous == null ? List.of() : previous.slowQueries();
-            Snapshot snapshot = new Snapshot(copyTarget(target), false, Instant.now(), error.getMessage(), samples, hotKeys, largeKeys, slowQueries);
+            RouteSnapshotObservation routeSnapshot = previous == null ? null : previous.routeSnapshot();
+            Snapshot snapshot = new Snapshot(copyTarget(target), false, Instant.now(), error.getMessage(), samples, hotKeys, largeKeys, slowQueries, routeSnapshot);
             snapshots.put(proxyId, snapshot);
             remember(snapshot);
         }
@@ -315,6 +408,7 @@ public class ObservabilityService {
         List<Map<String, Object>> hotPayload = readJsonMaps(target.getAdminUrl(), "/debug/hot-keys?limit=100");
         List<Map<String, Object>> largePayload = readJsonMaps(target.getAdminUrl(), "/debug/large-keys?limit=100");
         List<Map<String, Object>> slowPayload = readJsonMaps(target.getAdminUrl(), "/debug/slow-queries?limit=100");
+        Map<String, Object> routePayload = readJsonMap(target.getAdminUrl(), "/debug/route-snapshot");
         Map<String, String> resourceAttributes = resourceAttributes(target);
         List<HotKeyObservation> hotKeys = hotPayload.stream()
                 .map(item -> new HotKeyObservation(
@@ -359,7 +453,19 @@ public class ObservabilityService {
                         collectedAt,
                         List.of(target.getProxyId())))
                 .toList();
-        return new Snapshot(copyTarget(target), true, collectedAt, "", samples, hotKeys, largeKeys, slowQueries);
+        RouteSnapshotObservation routeSnapshot = new RouteSnapshotObservation(
+                target.getProxyId(),
+                target.getDataplane(),
+                target.getAdminUrl(),
+                true,
+                number(routePayload, "epoch").longValue(),
+                string(routePayload, "configHash"),
+                string(routePayload, "lastApplyResult"),
+                number(routePayload, "lastApplyTime").longValue(),
+                number(routePayload, "lastPollTime").longValue(),
+                collectedAt,
+                "");
+        return new Snapshot(copyTarget(target), true, collectedAt, "", samples, hotKeys, largeKeys, slowQueries, routeSnapshot);
     }
 
     private Optional<String> fetch(String adminUrl, String path) {
@@ -471,6 +577,16 @@ public class ObservabilityService {
             builder.header("Authorization", "Token " + properties.getStorage().getInflux().getToken());
         }
         httpClient.send(builder.build(), HttpResponse.BodyHandlers.discarding());
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readJsonMap(String adminUrl, String path) throws IOException {
+        String body = fetch(adminUrl, path).orElseThrow(() -> new IOException(path + " unavailable"));
+        Object parsed = objectMapper.readValue(body, Object.class);
+        if (parsed instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        throw new IOException(path + " returned non-object payload");
     }
 
     @SuppressWarnings("unchecked")
@@ -833,9 +949,10 @@ public class ObservabilityService {
             List<MetricSample> samples,
             List<HotKeyObservation> hotKeys,
             List<LargeKeyObservation> largeKeys,
-            List<SlowQueryObservation> slowQueries) {
+            List<SlowQueryObservation> slowQueries,
+            RouteSnapshotObservation routeSnapshot) {
         private static Snapshot empty(ObservabilityTarget target) {
-            return new Snapshot(copyTarget(target), false, null, "not collected", List.of(), List.of(), List.of(), List.of());
+            return new Snapshot(copyTarget(target), false, null, "not collected", List.of(), List.of(), List.of(), List.of(), null);
         }
     }
 

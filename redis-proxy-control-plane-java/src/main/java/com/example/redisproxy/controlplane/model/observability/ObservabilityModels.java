@@ -88,4 +88,43 @@ public final class ObservabilityModels {
             Map<String, String> resourceAttributes) {}
 
     public record HistoryResponse(String metric, Instant from, Instant to, int stepSeconds, List<HistoryPoint> points) {}
+
+    public record RouteSnapshotObservation(
+            String proxyId,
+            String dataplane,
+            String adminUrl,
+            boolean healthy,
+            long epoch,
+            String configHash,
+            String lastApplyResult,
+            long lastApplyTime,
+            long lastPollTime,
+            Instant collectedAt,
+            String error) {}
+
+    public record RouteConvergence(
+            long expectedVersionId,
+            long expectedRouteEpoch,
+            String expectedConfigHash,
+            String status,
+            int total,
+            int converged,
+            int stale,
+            int drift,
+            int unreachable,
+            List<RouteConvergenceInstance> proxies) {}
+
+    public record RouteConvergenceInstance(
+            String proxyId,
+            String dataplane,
+            String adminUrl,
+            boolean healthy,
+            long epoch,
+            String configHash,
+            String lastApplyResult,
+            long lastApplyTime,
+            long lastPollTime,
+            Instant collectedAt,
+            String status,
+            String reason) {}
 }

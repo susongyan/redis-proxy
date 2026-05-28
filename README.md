@@ -609,27 +609,27 @@ Slot cache 刷新策略：
 14. 回滚采用更大 `routeEpoch` 表达：复制历史版本内容并设置为 `currentEpoch + 1`，不会要求数据面接受旧 epoch。
 15. 控制面 `/api/v1/routes/status` 提供当前发布期望态；灰度真实命中量仍以数据面 Prometheus route decision 指标为准。
 16. 已固化 `scripts/e2e-dynamic-route.sh`、`scripts/e2e-asking.sh` 和 `scripts/e2e-cluster-failover.sh`。
+17. Go / Java 数据面支持本地 `instance.proxyId`，并在 `/debug/route-snapshot` 返回 `proxyId`、`configHash`、`lastApplyResult`、`lastApplyTime` 和 `lastPollTime`。
+18. 控制面 `/api/v1/routes/status` 返回 `expectedVersionId`、`expectedRouteEpoch` 和 `expectedConfigHash`。
+19. 控制面 Collector 已拉取每台 proxy 的 `/debug/route-snapshot`，并通过 `GET /api/v1/routes/convergence` 提供多 proxy 配置收敛状态。
+20. 已固化 `scripts/e2e-route-convergence.sh`，覆盖 Go / Java 数据面 route snapshot hash 和控制面 `CONVERGED` 状态验证。
 
 多 Proxy 配置收敛观测：
 
 - 控制面发布成功只表示期望态已经更新，不表示所有数据面实例都已拿到并生效相同配置。
-- 多台 proxy 的收敛判断建议使用 `routeEpoch + configHash + proxyId` 三元组：`routeEpoch` 判断版本新旧，`configHash` 判断配置内容一致性，`proxyId` 标识具体实例。
-- 后续数据面 `/debug/route-snapshot` 应返回 `proxyId`、`epoch`、`configHash`、`lastApplyResult`、`lastApplyTime` 和 `lastPollTime`，用于定位未收敛、应用失败或长轮询异常的实例。
+- 多台 proxy 的收敛判断使用 `routeEpoch + configHash + proxyId` 三元组：`routeEpoch` 判断版本新旧，`configHash` 判断配置内容一致性，`proxyId` 标识具体实例。
+- 数据面 `/debug/route-snapshot` 返回 `proxyId`、`epoch`、`configHash`、`lastApplyResult`、`lastApplyTime` 和 `lastPollTime`，用于定位未收敛、应用失败或长轮询异常的实例。
 - Prometheus 继续只暴露低基数指标，例如 `route_epoch`、`route_snapshot_update_total` 和 `route_snapshot_last_success_timestamp_seconds`；不建议把 `configHash` 作为高频 metrics label。
-- 控制面应保存当前发布期望态：`expectedVersionId`、`expectedRouteEpoch`、`expectedConfigHash`，并由 Collector 定时拉取每台 proxy 的 `/debug/route-snapshot`。
-- 后续新增 `GET /api/v1/routes/convergence`，返回整体收敛状态和逐实例明细。建议状态包括 `CONVERGED`、`PARTIAL`、`STALE`、`DRIFT` 和 `UNREACHABLE`。
+- 控制面保存当前发布期望态：`expectedVersionId`、`expectedRouteEpoch`、`expectedConfigHash`，并由 Collector 定时拉取每台 proxy 的 `/debug/route-snapshot`。
+- `GET /api/v1/routes/convergence` 返回整体收敛状态和逐实例明细。状态包括 `CONVERGED`、`PARTIAL`、`STALE`、`DRIFT` 和 `UNREACHABLE`。
 - 灰度继续扩大比例或执行自动化双活切换前，建议要求所有健康 proxy 达到 `CONVERGED`；若出现 `DRIFT`，应暂停继续发布并优先排查配置生成或数据面应用路径。
 
 待完成：
 
-1. 增加数据面稳定 `proxyId` 配置，并在 `/debug/route-snapshot` 返回配置收敛字段。
-2. 增加控制面发布配置 hash 计算和保存，形成 `expectedVersionId + expectedRouteEpoch + expectedConfigHash` 期望态。
-3. 扩展控制面 Collector，定时拉取每台 proxy 的 `/debug/route-snapshot`。
-4. 增加 `GET /api/v1/routes/convergence` 查询 API 和多 proxy 收敛 E2E 验证。
-5. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
-6. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
-7. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
-8. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
+1. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
+2. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
+3. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
+4. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
 
 第三阶段：治理能力
 

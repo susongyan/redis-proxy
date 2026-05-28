@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
+	Instance     InstanceConfig     `yaml:"instance" json:"instance"`
 	Server       ServerConfig       `yaml:"server" json:"server"`
 	Admin        AdminConfig        `yaml:"admin" json:"admin"`
 	Mode         string             `yaml:"mode" json:"mode"`
@@ -19,6 +21,10 @@ type Config struct {
 	ControlPlane ControlPlaneConfig `yaml:"controlPlane" json:"controlPlane"`
 	Analysis     AnalysisConfig     `yaml:"analysis" json:"analysis"`
 	Governance   GovernanceConfig   `yaml:"governance" json:"governance"`
+}
+
+type InstanceConfig struct {
+	ProxyID string `yaml:"proxyId" json:"proxyId"`
 }
 
 type ServerConfig struct {
@@ -169,6 +175,13 @@ func ApplyDefaults(cfg *Config) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Instance.ProxyID == "" {
+		if host, err := os.Hostname(); err == nil && host != "" {
+			cfg.Instance.ProxyID = host
+		} else {
+			cfg.Instance.ProxyID = "proxy-" + runtime.GOOS
+		}
+	}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = "0.0.0.0:6379"
 	}

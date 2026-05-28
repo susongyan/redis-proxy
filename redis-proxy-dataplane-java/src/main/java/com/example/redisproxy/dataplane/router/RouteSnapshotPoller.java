@@ -85,6 +85,7 @@ public class RouteSnapshotPoller {
 
     boolean watchOnce() {
         try {
+            routeResolver.markPoll();
             Duration watchTimeout = Duration.ofSeconds(watchTimeoutSeconds());
             Duration requestTimeout = watchTimeout.plusMillis(requestTimeoutMillis());
             HttpRequest request = HttpRequest.newBuilder(URI.create(controlPlaneWatchUrl(routeResolver.currentEpoch(), watchTimeout)))
@@ -102,6 +103,7 @@ public class RouteSnapshotPoller {
                 return true;
             }
             ProxyProperties next = objectMapper.readValue(response.body(), ProxyProperties.class);
+            next.setInstance(properties.getInstance());
             RouteResolver.ApplyResult result = routeResolver.applyConfig(next, backendPool);
             if (!result.applied()) {
                 registry.counter("redis.proxy.route.snapshot.rejected", "reason", result.result()).increment();

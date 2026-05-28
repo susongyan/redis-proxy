@@ -35,11 +35,15 @@ public class RouteResolver {
     private final AtomicReference<Snapshot> snapshot;
     private final AtomicInteger slotCoverage = new AtomicInteger();
     private final AtomicLong lastRefreshTimestampSeconds = new AtomicLong();
+    private final AtomicLong lastApplyTimeSeconds = new AtomicLong();
+    private final AtomicLong lastPollTimeSeconds = new AtomicLong();
     private final Map<String, String[]> slotNodes = new ConcurrentHashMap<>();
+    private volatile String lastApplyResult = "startup";
 
     public RouteResolver(ProxyProperties properties, MeterRegistry registry) {
         properties.validate();
         this.snapshot = new AtomicReference<>(new Snapshot(properties, clusters(properties)));
+        lastApplyTimeSeconds.set(System.currentTimeMillis() / 1000);
         for (String clusterName : snapshot.get().clusters().keySet()) {
             slotNodes.put(clusterName, new String[SLOTS]);
         }
@@ -228,7 +232,12 @@ public class RouteResolver {
     public SnapshotInfo snapshotInfo() {
         Snapshot current = snapshot.get();
         return new SnapshotInfo(
+                current.properties().getInstance().getProxyId(),
                 current.properties().getRouting().getRouteEpoch(),
+                RouteConfigHash.hash(current.properties()),
+                lastApplyResult,
+                lastApplyTimeSeconds.get(),
+                lastPollTimeSeconds.get(),
                 current.properties().getMode(),
                 current.properties().getRouting().getDefaultCluster(),
                 routeClusters(),
@@ -249,12 +258,15 @@ public class RouteResolver {
     }
 
     public ApplyResult applyConfig(ProxyProperties next, BackendPool backendPool) {
+        next.setInstance(snapshot.get().properties().getInstance());
         next.validate();
         Snapshot current = snapshot.get();
         if (!next.getMode().equals(current.properties().getMode())) {
+            recordApply("runtime_shape");
             return new ApplyResult("runtime_shape", false, "mode changes are not hot reloadable");
         }
         if (next.getRouting().getRouteEpoch() <= current.properties().getRouting().getRouteEpoch()) {
+            recordApply("stale_epoch");
             return new ApplyResult("stale_epoch", false, "routeEpoch must be greater than current");
         }
         for (ProxyProperties.Cluster cluster : next.getBackends().getClusters()) {
@@ -262,8 +274,18 @@ public class RouteResolver {
             slotNodes.computeIfAbsent(cluster.getName(), ignored -> new String[SLOTS]);
         }
         snapshot.set(new Snapshot(next, clusters(next)));
+        recordApply("success");
         slotCoverage.set(slotCoverage());
         return new ApplyResult("success", true, null);
+    }
+
+    public void markPoll() {
+        lastPollTimeSeconds.set(System.currentTimeMillis() / 1000);
+    }
+
+    void recordApply(String result) {
+        lastApplyResult = result == null || result.isBlank() ? "error" : result;
+        lastApplyTimeSeconds.set(System.currentTimeMillis() / 1000);
     }
 
     String normalizeAddr(String addr) {
@@ -395,7 +417,7 @@ public class RouteResolver {
     }
 
     public record RouteDecision(String address, String cluster, String rule, long epoch) {}
-    public record SnapshotInfo(long epoch, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules, Map<String, Object> governance) {}
+    public record SnapshotInfo(String proxyId, long epoch, String configHash, String lastApplyResult, long lastApplyTime, long lastPollTime, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules, Map<String, Object> governance) {}
     public record ApplyResult(String result, boolean applied, String error) {}
     private record Snapshot(ProxyProperties properties, Map<String, ProxyProperties.Cluster> clusters) {}
     private record SelectedCluster(String cluster, String rule) {}

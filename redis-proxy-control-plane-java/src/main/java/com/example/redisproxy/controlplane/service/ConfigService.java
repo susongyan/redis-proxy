@@ -117,6 +117,9 @@ public class ConfigService {
         return new RouteStatus(
                 version.versionId(),
                 config.getRouting().getRouteEpoch(),
+                version.versionId(),
+                config.getRouting().getRouteEpoch(),
+                RouteConfigHash.hash(config),
                 config.getRouting().getDefaultCluster(),
                 copyRules(config.getRouting().getRules()),
                 config.getBackends().getClusters().stream().map(ProxyConfig.Cluster::getName).toList(),

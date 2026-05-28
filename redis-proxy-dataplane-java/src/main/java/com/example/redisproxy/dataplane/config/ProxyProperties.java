@@ -12,6 +12,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "proxy")
 public class ProxyProperties {
+    private Instance instance = new Instance();
     private Server server = new Server();
     private Admin admin = new Admin();
     private String mode = "standalone";
@@ -25,6 +26,9 @@ public class ProxyProperties {
     public void validate() {
         if (!"standalone".equals(mode) && !"cluster".equals(mode)) {
             throw new IllegalArgumentException("unsupported mode: " + mode);
+        }
+        if (instance.proxyId == null || instance.proxyId.isBlank()) {
+            instance.proxyId = defaultProxyId();
         }
         if (routing.defaultCluster == null || routing.defaultCluster.isBlank()) {
             throw new IllegalArgumentException("routing.defaultCluster is required");
@@ -91,6 +95,8 @@ public class ProxyProperties {
         }
     }
 
+    public Instance getInstance() { return instance; }
+    public void setInstance(Instance instance) { this.instance = instance == null ? new Instance() : instance; }
     public Server getServer() { return server; }
     public void setServer(Server server) { this.server = server; }
     public Admin getAdmin() { return admin; }
@@ -109,6 +115,21 @@ public class ProxyProperties {
     public void setAnalysis(Analysis analysis) { this.analysis = analysis; }
     public Governance getGovernance() { return governance; }
     public void setGovernance(Governance governance) { this.governance = governance; }
+
+    private static String defaultProxyId() {
+        try {
+            String host = java.net.InetAddress.getLocalHost().getHostName();
+            return host == null || host.isBlank() ? "proxy-java" : host;
+        } catch (Exception e) {
+            return "proxy-java";
+        }
+    }
+
+    public static class Instance {
+        private String proxyId = "";
+        public String getProxyId() { return proxyId; }
+        public void setProxyId(String proxyId) { this.proxyId = proxyId; }
+    }
 
     public static class Server {
         private String listen = "0.0.0.0:6379";

@@ -207,6 +207,7 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 }
 
 func watchControlPlane(ctx context.Context, client *http.Client, baseURL string, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) bool {
+	manager.MarkPoll()
 	watchURL, err := controlPlaneWatchURL(baseURL, manager.CurrentEpoch(), watchTimeout)
 	if err != nil {
 		reg.RouteSnapshotUpdates.WithLabelValues("error").Inc()

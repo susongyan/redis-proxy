@@ -6,7 +6,9 @@ import com.example.redisproxy.controlplane.model.RollbackRequest;
 import com.example.redisproxy.controlplane.model.ConfigVersion;
 import com.example.redisproxy.controlplane.model.ConfigDiff;
 import com.example.redisproxy.controlplane.model.RouteStatus;
+import com.example.redisproxy.controlplane.model.observability.ObservabilityModels.RouteConvergence;
 import com.example.redisproxy.controlplane.service.ConfigService;
+import com.example.redisproxy.controlplane.service.ObservabilityService;
 import jakarta.validation.Valid;
 import java.time.Duration;
 import java.util.List;
@@ -24,9 +26,11 @@ import org.springframework.web.context.request.async.DeferredResult;
 @RestController
 public class ConfigController {
     private final ConfigService configService;
+    private final ObservabilityService observabilityService;
 
-    public ConfigController(ConfigService configService) {
+    public ConfigController(ConfigService configService, ObservabilityService observabilityService) {
         this.configService = configService;
+        this.observabilityService = observabilityService;
     }
 
     @GetMapping("/healthz")
@@ -93,5 +97,10 @@ public class ConfigController {
     @GetMapping("/api/v1/routes/status")
     public RouteStatus routeStatus() {
         return configService.routeStatus();
+    }
+
+    @GetMapping("/api/v1/routes/convergence")
+    public RouteConvergence routeConvergence() {
+        return observabilityService.routeConvergence(configService.routeStatus());
     }
 }

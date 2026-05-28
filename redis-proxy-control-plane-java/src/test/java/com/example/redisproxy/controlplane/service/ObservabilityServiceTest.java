@@ -4,11 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.redisproxy.controlplane.model.observability.ObservabilityTarget;
+import com.example.redisproxy.controlplane.model.RouteStatus;
 import com.example.redisproxy.controlplane.model.observability.ObservabilityProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -64,6 +66,7 @@ class ObservabilityServiceTest {
         assertThat(service.history("redis_proxy_auth_total", null, null, 60, null, null, null).points())
                 .isNotEmpty();
         assertThat(service.prometheus()).contains("redis_proxy_control_plane_slow_query_observed_total");
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).status()).isEqualTo("CONVERGED");
     }
 
     @Test
@@ -105,6 +108,18 @@ class ObservabilityServiceTest {
         assertThat(service.slowQueries(null, null, null, 10))
                 .extracting("key")
                 .containsExactly("app-a:slow");
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).status()).isEqualTo("UNREACHABLE");
+    }
+
+    @Test
+    void routeConvergenceClassifiesStaleAndDrift() throws Exception {
+        startServer();
+        service = new ObservabilityService(new ObjectMapper());
+        service.register(target("proxy-1", baseUrl(), "go"));
+        service.collectNow("proxy-1");
+
+        assertThat(service.routeConvergence(routeStatus(3, "sha256:abc")).status()).isEqualTo("STALE");
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:def")).status()).isEqualTo("DRIFT");
     }
 
     @Test
@@ -166,6 +181,12 @@ class ObservabilityServiceTest {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
+        server.createContext("/debug/route-snapshot", exchange -> {
+            byte[] body = "{\"proxyId\":\"proxy-1\",\"epoch\":2,\"configHash\":\"sha256:abc\",\"lastApplyResult\":\"success\",\"lastApplyTime\":10,\"lastPollTime\":11}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
         server.createContext("/v1/logs", exchange -> {
             otlpWrites.incrementAndGet();
             byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
@@ -217,5 +238,9 @@ class ObservabilityServiceTest {
                 redis_proxy_slow_query_unsupported_total{command="SCAN"} 1
                 redis_proxy_slow_query_tracked_keys 1
                 """;
+    }
+
+    private static RouteStatus routeStatus(long epoch, String hash) {
+        return new RouteStatus(2, epoch, 2, epoch, hash, "redis-a", List.of(), List.of("redis-a"), null);
     }
 }

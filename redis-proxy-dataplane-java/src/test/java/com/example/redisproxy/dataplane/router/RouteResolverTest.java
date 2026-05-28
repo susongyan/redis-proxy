@@ -120,6 +120,7 @@ class RouteResolverTest {
     @Test
     void applyConfigAcceptsHigherEpochAndRejectsStale() {
         ProxyProperties properties = properties("127.0.0.1:6379");
+        properties.getInstance().setProxyId("proxy-java-1");
         RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
         BackendPool backendPool = mock(BackendPool.class);
 
@@ -148,7 +149,27 @@ class RouteResolverTest {
         assertThat(resolver.currentEpoch()).isEqualTo(2);
         assertThat(resolver.routeDecision(request("GET", "user:1")).cluster()).isEqualTo("redis-b");
         assertThat(resolver.limits().getLargeResponseBytes()).isEqualTo(2048);
+        assertThat(resolver.snapshotInfo().proxyId()).isEqualTo("proxy-java-1");
+        assertThat(resolver.snapshotInfo().configHash()).startsWith("sha256:");
+        assertThat(resolver.snapshotInfo().lastApplyResult()).isEqualTo("success");
         verify(backendPool).ensureAll(List.of("127.0.0.1:6380"));
+    }
+
+    @Test
+    void routeConfigHashIgnoresLocalRuntimeFieldsAndChangesForSnapshotFields() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        properties.validate();
+        String base = RouteConfigHash.hash(properties);
+
+        properties.getInstance().setProxyId("other");
+        properties.getServer().setListen("0.0.0.0:9999");
+        properties.getAdmin().setListen("0.0.0.0:19999");
+        properties.getControlPlane().setEnabled(true);
+        properties.getControlPlane().setUrl("http://127.0.0.1:8090/api/v1/config");
+        assertThat(RouteConfigHash.hash(properties)).isEqualTo(base);
+
+        properties.getRouting().setRouteEpoch(2);
+        assertThat(RouteConfigHash.hash(properties)).isNotEqualTo(base);
     }
 
     private static RouteResolver resolver(String... nodes) {

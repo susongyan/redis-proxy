@@ -149,6 +149,52 @@ func TestValidateRejectsInvalidSlowQueryAnalysis(t *testing.T) {
 	}
 }
 
+func TestSnapshotHashIgnoresLocalRuntimeFields(t *testing.T) {
+	cfg := validConfig()
+	ApplyDefaults(&cfg)
+	base := SnapshotHash(&cfg)
+
+	cfg.Instance.ProxyID = "proxy-2"
+	cfg.Server.Listen = "127.0.0.1:9999"
+	cfg.Admin.Listen = "127.0.0.1:19999"
+	cfg.ControlPlane.Enabled = true
+	cfg.ControlPlane.URL = "http://127.0.0.1:8090/api/v1/config"
+	if got := SnapshotHash(&cfg); got != base {
+		t.Fatalf("local runtime fields changed hash: %s -> %s", base, got)
+	}
+
+	cfg.Routing.RouteEpoch++
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("routing change did not change snapshot hash")
+	}
+}
+
+func TestSnapshotHashChangesForGovernanceLimitsAndAnalysis(t *testing.T) {
+	cfg := validConfig()
+	ApplyDefaults(&cfg)
+	base := SnapshotHash(&cfg)
+
+	cfg.Governance.Enabled = true
+	cfg.Governance.RequireAuth = true
+	cfg.Governance.Namespaces = []NamespaceConfig{{Name: "app-a", Token: "token-a"}}
+	ApplyDefaults(&cfg)
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("governance change did not change snapshot hash")
+	}
+
+	base = SnapshotHash(&cfg)
+	cfg.Limits.LargeResponseBytes++
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("limits change did not change snapshot hash")
+	}
+
+	base = SnapshotHash(&cfg)
+	cfg.Analysis.HotKey.MetricsTopN++
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("analysis change did not change snapshot hash")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: ServerConfig{Listen: "127.0.0.1:6379"},

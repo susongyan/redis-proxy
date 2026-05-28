@@ -213,6 +213,29 @@ func TestRouteRuleSelectsClusterByNamespacePatternAndHashTag(t *testing.T) {
 	}
 }
 
+func TestSnapshotInfoIncludesConvergenceFields(t *testing.T) {
+	cfg := managerTestConfig("127.0.0.1:6379", 1, nil)
+	cfg.Instance.ProxyID = "proxy-go-1"
+	manager, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := manager.SnapshotInfo()
+	if info.ProxyID != "proxy-go-1" {
+		t.Fatalf("proxyId=%q", info.ProxyID)
+	}
+	if info.ConfigHash == "" {
+		t.Fatal("configHash is empty")
+	}
+	if info.LastApplyResult != "startup" {
+		t.Fatalf("lastApplyResult=%q", info.LastApplyResult)
+	}
+	manager.MarkPoll()
+	if got := manager.SnapshotInfo().LastPollTime; got == 0 {
+		t.Fatal("lastPollTime was not updated")
+	}
+}
+
 func TestManagerApplyConfigAcceptsHigherEpochAndRejectsStale(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
