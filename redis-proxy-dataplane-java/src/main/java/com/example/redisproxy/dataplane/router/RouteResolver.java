@@ -3,6 +3,7 @@ package com.example.redisproxy.dataplane.router;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
+import com.example.redisproxy.dataplane.protocol.ArgRef;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import com.example.redisproxy.dataplane.protocol.RespValue;
 import com.example.redisproxy.dataplane.protocol.RespValueParser;
@@ -60,10 +61,10 @@ public class RouteResolver {
             throw new IllegalArgumentException("route cluster not found: " + selected.cluster());
         }
         List<String> nodes = cluster.getNodes();
-        if (!"cluster".equals(current.properties().getMode()) || nodes.size() == 1 || request.args().size() < 2) {
+        if (!"cluster".equals(current.properties().getMode()) || nodes.size() == 1 || request.argCount() < 2) {
             return new RouteDecision(nodes.getFirst(), selected.cluster(), selected.rule(), currentEpoch());
         }
-        int slot = RedisSlot.slot(request.args().get(1));
+        int slot = request.arg(1).slot();
         String cached = slotNodes.get(selected.cluster())[slot];
         if (cached != null && !cached.isBlank()) {
             return new RouteDecision(cached, selected.cluster(), selected.rule(), currentEpoch());
@@ -330,23 +331,21 @@ public class RouteResolver {
     }
 
     private SelectedCluster selectCluster(Snapshot current, RespRequest request) {
-        if (request.args().size() < 2) {
+        if (request.argCount() < 2) {
             return new SelectedCluster(current.properties().getRouting().getDefaultCluster(), "default");
         }
-        byte[] rawKey = request.args().get(1);
-        String key = new String(rawKey, StandardCharsets.UTF_8);
-        String hashTag = new String(hashTag(rawKey), StandardCharsets.UTF_8);
+        ArgRef rawKey = request.arg(1);
         for (ProxyProperties.RouteRule rule : current.properties().getRouting().getRules()) {
             if (rule.getTrafficPercent() <= 0) {
                 continue;
             }
-            if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && !key.startsWith(rule.getKeyPrefix())) {
+            if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && !rawKey.startsWithUtf8(rule.getKeyPrefix())) {
                 continue;
             }
-            if (rule.getHashTag() != null && !rule.getHashTag().isBlank() && !hashTag.equals(rule.getHashTag())) {
+            if (rule.getHashTag() != null && !rule.getHashTag().isBlank() && !rawKey.hashTagEqualsUtf8(rule.getHashTag())) {
                 continue;
             }
-            if (rule.getTrafficPercent() >= 100 || RedisSlot.slot(rawKey) % 100 < rule.getTrafficPercent()) {
+            if (rule.getTrafficPercent() >= 100 || rawKey.slot() % 100 < rule.getTrafficPercent()) {
                 return new SelectedCluster(rule.getCluster(), rule.getName());
             }
         }
@@ -381,30 +380,6 @@ public class RouteResolver {
             }
         }
         return covered;
-    }
-
-    private static byte[] hashTag(byte[] key) {
-        int start = -1;
-        for (int i = 0; i < key.length; i++) {
-            if (key[i] == '{') {
-                start = i;
-                break;
-            }
-        }
-        if (start < 0) {
-            return key;
-        }
-        for (int i = start + 1; i < key.length; i++) {
-            if (key[i] == '}') {
-                if (i == start + 1) {
-                    return key;
-                }
-                byte[] tag = new byte[i - start - 1];
-                System.arraycopy(key, start + 1, tag, 0, tag.length);
-                return tag;
-            }
-        }
-        return key;
     }
 
     public record RouteDecision(String address, String cluster, String rule, long epoch) {}

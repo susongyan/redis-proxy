@@ -2,10 +2,10 @@ package com.example.redisproxy.dataplane.analysis;
 
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
+import com.example.redisproxy.dataplane.protocol.ArgRef;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -72,8 +72,8 @@ public class SlowQueryTracker {
         GovernancePolicy.KeyResult result = GovernancePolicy.keys(request);
         List<String> keys = new ArrayList<>();
         if (result.supported()) {
-            for (byte[] key : result.keys()) {
-                keys.add(new String(key, StandardCharsets.UTF_8));
+            for (ArgRef key : result.keys()) {
+                keys.add(key.utf8());
             }
         }
         return new Context(namespace, request.command(), keys, result.supported());

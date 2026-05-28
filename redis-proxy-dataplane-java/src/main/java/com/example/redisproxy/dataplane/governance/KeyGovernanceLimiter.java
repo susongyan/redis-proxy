@@ -1,10 +1,10 @@
 package com.example.redisproxy.dataplane.governance;
 
 import com.example.redisproxy.dataplane.config.ProxyProperties;
+import com.example.redisproxy.dataplane.protocol.ArgRef;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
@@ -33,10 +33,10 @@ public class KeyGovernanceLimiter {
             observeDecision(namespace.getName(), "unsupported", request.command(), "reject", "key_policy_unsupported");
             return Decision.rejected("unsupported", "key_policy_unsupported", "-ERR command key policy unsupported\r\n");
         }
-        for (byte[] key : keys.keys()) {
-            String text = new String(key, StandardCharsets.UTF_8);
-            if (namespace.getDisabledKeys().contains(text)) {
-                observeDecision(namespace.getName(), "exact", request.command(), "reject", "exact_key_disabled");
+        String command = request.command();
+        for (ArgRef key : keys.keys()) {
+            if (namespace.getDisabledKeys().contains(key.utf8())) {
+                observeDecision(namespace.getName(), "exact", command, "reject", "exact_key_disabled");
                 return Decision.rejected("exact", "exact_key_disabled", "-ERR key disabled by proxy governance\r\n");
             }
             for (ProxyProperties.KeyRule rule : namespace.getKeyRules()) {
@@ -45,18 +45,18 @@ public class KeyGovernanceLimiter {
                 }
                 observeKeyLimitConfig(namespace.getName(), rule);
                 if (rule.isDisabled()) {
-                    observeDecision(namespace.getName(), rule.getName(), request.command(), "reject", "rule_disabled");
+                    observeDecision(namespace.getName(), rule.getName(), command, "reject", "rule_disabled");
                     return Decision.rejected(rule.getName(), "rule_disabled", "-ERR key disabled by proxy governance\r\n");
                 }
                 if (rule.getMaxQps() > 0) {
                     LimitResult limit = allow(governance, namespace.getName(), rule);
                     observeKeyLimitUsage(namespace.getName(), rule.getName(), limit.total());
                     if (!limit.allowed()) {
-                        observeDecision(namespace.getName(), rule.getName(), request.command(), "reject", "qps_limit");
+                        observeDecision(namespace.getName(), rule.getName(), command, "reject", "qps_limit");
                         return Decision.rejected(rule.getName(), "qps_limit", "-ERR key limited by proxy governance\r\n");
                     }
                 }
-                observeDecision(namespace.getName(), rule.getName(), request.command(), "allow", "");
+                observeDecision(namespace.getName(), rule.getName(), command, "allow", "");
             }
         }
         return Decision.allow();
@@ -141,37 +141,14 @@ public class KeyGovernanceLimiter {
         return !namespace.getDisabledKeys().isEmpty() || !namespace.getKeyRules().isEmpty();
     }
 
-    private static boolean matches(ProxyProperties.KeyRule rule, byte[] key) {
-        String text = new String(key, StandardCharsets.UTF_8);
-        if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && !text.startsWith(rule.getKeyPrefix())) {
+    private static boolean matches(ProxyProperties.KeyRule rule, ArgRef key) {
+        if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && !key.startsWithUtf8(rule.getKeyPrefix())) {
             return false;
         }
         if (rule.getHashTag() != null && !rule.getHashTag().isBlank()) {
-            return rule.getHashTag().equals(new String(hashTag(key), StandardCharsets.UTF_8));
+            return key.hashTagEqualsUtf8(rule.getHashTag());
         }
         return true;
-    }
-
-    private static byte[] hashTag(byte[] key) {
-        int start = -1;
-        for (int i = 0; i < key.length; i++) {
-            if (key[i] == '{') {
-                start = i;
-                break;
-            }
-        }
-        if (start < 0) {
-            return key;
-        }
-        for (int i = start + 1; i < key.length; i++) {
-            if (key[i] == '}') {
-                if (i == start + 1) {
-                    return key;
-                }
-                return java.util.Arrays.copyOfRange(key, start + 1, i);
-            }
-        }
-        return key;
     }
 
     public record Decision(boolean allowed, String rule, String reason, String response) {

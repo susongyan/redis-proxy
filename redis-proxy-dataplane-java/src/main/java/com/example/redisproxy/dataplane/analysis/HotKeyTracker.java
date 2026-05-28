@@ -2,12 +2,12 @@ package com.example.redisproxy.dataplane.analysis;
 
 import com.example.redisproxy.dataplane.config.ProxyProperties;
 import com.example.redisproxy.dataplane.governance.GovernancePolicy;
+import com.example.redisproxy.dataplane.protocol.ArgRef;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
@@ -80,8 +80,8 @@ public class HotKeyTracker {
         }
         String command = request.command();
         long nowMillis = clock.millis();
-        for (byte[] raw : keys.keys()) {
-            KeyId key = new KeyId(namespace, command, new String(raw, StandardCharsets.UTF_8));
+        for (ArgRef raw : keys.keys()) {
+            KeyId key = new KeyId(namespace, command, raw.utf8());
             Window window = windowFor(key, cfg, nowMillis, namespace, command);
             if (window == null) {
                 continue;

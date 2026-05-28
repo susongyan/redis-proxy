@@ -1,8 +1,8 @@
 package com.example.redisproxy.dataplane.governance;
 
 import com.example.redisproxy.dataplane.config.ProxyProperties;
+import com.example.redisproxy.dataplane.protocol.ArgRef;
 import com.example.redisproxy.dataplane.protocol.RespRequest;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -23,11 +23,11 @@ public final class GovernancePolicy {
         if (!governance.isEnabled()) {
             return new AuthResult(false, "", "-ERR AUTH disabled\r\n", "disabled");
         }
-        if (request.args().size() != 3) {
+        if (request.argCount() != 3) {
             return new AuthResult(false, "", "-ERR AUTH requires namespace and token\r\n", "invalid");
         }
-        String namespace = new String(request.args().get(1), StandardCharsets.UTF_8);
-        String token = new String(request.args().get(2), StandardCharsets.UTF_8);
+        String namespace = request.argUtf8(1);
+        String token = request.argUtf8(2);
         ProxyProperties.Namespace candidate = governance.namespace(namespace);
         if (candidate != null) {
             if (candidate.getToken().equals(token)) {
@@ -72,7 +72,7 @@ public final class GovernancePolicy {
             if (!keys.supported()) {
                 return new Decision(UNSUPPORTED, namespaceName, "-ERR command key policy unsupported\r\n", "key_policy_unsupported", warn, warn ? "warn_only_command" : null);
             }
-            for (byte[] key : keys.keys()) {
+            for (ArgRef key : keys.keys()) {
                 if (!hasAllowedPrefix(key, namespace.getAllowedKeyPrefixes())) {
                     return new Decision(DENY, namespaceName, "-ERR key denied by proxy governance\r\n", "key_prefix", warn, warn ? "warn_only_command" : null);
                 }
@@ -108,26 +108,25 @@ public final class GovernancePolicy {
     }
 
     public static KeyResult keys(RespRequest request) {
-        List<byte[]> args = request.args();
-        if (args.size() < 2) {
+        if (request.argCount() < 2) {
             return new KeyResult(List.of(), false);
         }
         return switch (request.command()) {
             case "GET", "SET", "EXPIRE", "PEXPIRE", "TTL", "PTTL", "HGET", "HSET", "HDEL", "LPUSH", "RPUSH", "LPOP", "RPOP", "SADD", "SREM", "SMEMBERS", "ZADD", "ZREM", "ZRANGE" ->
-                    new KeyResult(List.of(args.get(1)), true);
-            case "DEL", "EXISTS", "MGET" -> new KeyResult(List.copyOf(args.subList(1, args.size())), true);
-            case "MSET" -> msetKeys(args);
+                    new KeyResult(List.of(request.arg(1)), true);
+            case "DEL", "EXISTS", "MGET" -> new KeyResult(List.copyOf(request.args().subList(1, request.argCount())), true);
+            case "MSET" -> msetKeys(request);
             default -> new KeyResult(List.of(), false);
         };
     }
 
-    private static KeyResult msetKeys(List<byte[]> args) {
-        if ((args.size() - 1) % 2 != 0) {
+    private static KeyResult msetKeys(RespRequest request) {
+        if ((request.argCount() - 1) % 2 != 0) {
             return new KeyResult(List.of(), false);
         }
-        List<byte[]> keys = new ArrayList<>();
-        for (int i = 1; i < args.size(); i += 2) {
-            keys.add(args.get(i));
+        List<ArgRef> keys = new ArrayList<>();
+        for (int i = 1; i < request.argCount(); i += 2) {
+            keys.add(request.arg(i));
         }
         return new KeyResult(keys, true);
     }
@@ -144,10 +143,9 @@ public final class GovernancePolicy {
         return commands.stream().map(value -> value.toUpperCase(Locale.ROOT)).collect(Collectors.toSet()).contains(command);
     }
 
-    private static boolean hasAllowedPrefix(byte[] key, List<String> prefixes) {
-        String text = new String(key, StandardCharsets.UTF_8);
+    private static boolean hasAllowedPrefix(ArgRef key, List<String> prefixes) {
         for (String prefix : prefixes) {
-            if (text.startsWith(prefix)) {
+            if (key.startsWithUtf8(prefix)) {
                 return true;
             }
         }
@@ -160,5 +158,5 @@ public final class GovernancePolicy {
 
     public record AuthResult(boolean allowed, String namespace, String response, String result) {}
     public record Decision(String action, String namespace, String response, String reason, boolean warn, String warnReason) {}
-    public record KeyResult(List<byte[]> keys, boolean supported) {}
+    public record KeyResult(List<ArgRef> keys, boolean supported) {}
 }

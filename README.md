@@ -9,6 +9,7 @@
 - `redis-proxy-control-plane-java`：Java 21 + Spring Boot 控制面，负责配置模型、路由策略、治理规则和后续运维编排。
 
 尾延迟实验工作区说明已独立到 [tail-latency-comparison-workspace.md](docs/tail-latency-comparison-workspace.md)。
+TCP 应用与 Kafka / RocketMQ 零拷贝差异说明见 [zero-copy-networking-notes.md](docs/zero-copy-networking-notes.md)。
 
 ## 设计目标
 
