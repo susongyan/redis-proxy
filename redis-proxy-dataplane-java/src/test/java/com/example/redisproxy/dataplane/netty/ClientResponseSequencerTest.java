@@ -17,12 +17,12 @@ class ClientResponseSequencerTest {
         long second = sequencer.nextSequence();
         List<String> flushed = new ArrayList<>();
 
-        sequencer.complete(second, response("second"), pending ->
+        sequencer.complete(second, response("second")).flushed().forEach(pending ->
                 flushed.add(pending.response().toString(StandardCharsets.US_ASCII)));
         assertThat(flushed).isEmpty();
         assertThat(sequencer.pendingResponses()).isEqualTo(1);
 
-        sequencer.complete(first, response("first"), pending ->
+        sequencer.complete(first, response("first")).flushed().forEach(pending ->
                 flushed.add(pending.response().toString(StandardCharsets.US_ASCII)));
 
         assertThat(flushed).containsExactly("first", "second");

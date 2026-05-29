@@ -192,7 +192,7 @@ public class HotKeyTracker {
         });
     }
 
-    void refreshMetrics() {
+    synchronized void refreshMetrics() {
         TrackerConfig cfg = config;
         List<Entry> top = top(cfg.metricsTopN(), cfg);
         for (Meter meter : topMeters.getAndSet(List.of())) {

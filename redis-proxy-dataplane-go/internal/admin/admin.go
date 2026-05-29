@@ -66,6 +66,10 @@ func NewServer(addr string, cfg *config.Config, rt *router.Manager, pools *backe
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(slowQueries.Snapshot(limit))
 	})
+	mux.HandleFunc("/debug/pipeline", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reg.PipelineSnapshot())
+	})
 	mux.Handle("/metrics", promhttp.HandlerFor(reg.Prom, promhttp.HandlerOpts{}))
 	return &http.Server{Addr: addr, Handler: mux}
 }

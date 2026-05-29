@@ -105,6 +105,52 @@ def parse_latency_summary(path: pathlib.Path) -> dict[str, str]:
     }
 
 
+def parse_prometheus_samples(text: str) -> dict[str, float]:
+    samples: dict[str, float] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\\{[^}]*\\})?\\s+([-+]?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)", line)
+        if not match:
+            continue
+        name = match.group(1)
+        value = float(match.group(2))
+        samples[name] = samples.get(name, 0.0) + value
+    return samples
+
+
+def parse_pipeline_metrics(path: pathlib.Path) -> dict[str, str]:
+    before_files = sorted(path.glob("metrics-before-c*-p*.prom"))
+    after_files = sorted(path.glob("metrics-after-c*-p*.prom"))
+    if not after_files:
+        return {}
+    max_pending = 0.0
+    max_backend_inflight = 0.0
+    max_buffered = 0.0
+    max_batch = 0.0
+    errors_delta = 0.0
+    requests_delta = 0.0
+    for after in after_files:
+        after_samples = parse_prometheus_samples(after.read_text(errors="ignore"))
+        before_name = after.name.replace("metrics-after-", "metrics-before-")
+        before_path = after.with_name(before_name)
+        before_samples = parse_prometheus_samples(before_path.read_text(errors="ignore")) if before_path.exists() else {}
+        max_pending = max(max_pending, after_samples.get("redis_proxy_client_pending_responses", 0.0))
+        max_backend_inflight = max(max_backend_inflight, after_samples.get("redis_proxy_backend_inflight", 0.0))
+        max_buffered = max(max_buffered, after_samples.get("redis_proxy_pipeline_buffered_responses", 0.0))
+        max_batch = max(max_batch, after_samples.get("redis_proxy_pipeline_flush_batch_size_sum", 0.0))
+        errors_delta += max(0.0, after_samples.get("redis_proxy_errors_total", 0.0) - before_samples.get("redis_proxy_errors_total", 0.0))
+        requests_delta += max(0.0, after_samples.get("redis_proxy_requests_total", 0.0) - before_samples.get("redis_proxy_requests_total", 0.0))
+    error_rate = errors_delta / requests_delta if requests_delta > 0 else None
+    return {
+        "max_client_pending": f"{max_pending:.0f}",
+        "max_backend_inflight": f"{max_backend_inflight:.0f}",
+        "max_pipeline_buffered": f"{max_buffered:.0f}",
+        "pipeline_error_rate": f"{error_rate:.6f}" if error_rate is not None else "n/a",
+    }
+
+
 def default_run_name(path: pathlib.Path, metadata: dict[str, str]) -> str:
     return metadata.get("run_name") or path.name
 
@@ -133,7 +179,7 @@ def main() -> int:
     parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
 
-    runs: list[tuple[pathlib.Path, dict[str, str], list[dict[str, object]], dict[str, str], dict[str, str]]] = []
+    runs: list[tuple[pathlib.Path, dict[str, str], list[dict[str, object]], dict[str, str], dict[str, str], dict[str, str]]] = []
     for path in args.result_dirs:
         if not path.exists():
             print(f"missing result dir: {path}", file=sys.stderr)
@@ -142,7 +188,7 @@ def main() -> int:
         if not rows:
             print(f"no redis-benchmark csv files found in: {path}", file=sys.stderr)
             return 2
-        runs.append((path, metadata, rows, parse_resource_summary(path), parse_latency_summary(path)))
+        runs.append((path, metadata, rows, parse_resource_summary(path), parse_latency_summary(path), parse_pipeline_metrics(path)))
 
     output = args.output
     if output is None:
@@ -152,29 +198,32 @@ def main() -> int:
 
     key_set = set()
     lookup: dict[str, dict[tuple[int, int, str], dict[str, object]]] = {}
-    summaries: list[tuple[str, pathlib.Path, dict[str, str], dict[str, float], dict[str, str], dict[str, str]]] = []
-    for path, metadata, rows, resources, latency in runs:
+    summaries: list[tuple[str, pathlib.Path, dict[str, str], dict[str, float], dict[str, str], dict[str, str], dict[str, str]]] = []
+    for path, metadata, rows, resources, latency, pipeline_metrics in runs:
         name = default_run_name(path, metadata)
         lookup[name] = {}
         for row in rows:
             key = (int(row["clients"]), int(row["pipeline"]), str(row["test"]))
             lookup[name][key] = row
             key_set.add(key)
-        summaries.append((name, path, metadata, summarize(rows), resources, latency))
+        summaries.append((name, path, metadata, summarize(rows), resources, latency, pipeline_metrics))
 
     with output.open("w") as report:
         report.write(f"# {args.title}\n\n")
         report.write(f"Generated at: {dt.datetime.now().isoformat(timespec='seconds')}\n\n")
         report.write("## Aggregate Results\n\n")
-        report.write("| Group | Run | Profile | Backend model | Dataplane | Avg RPS | Avg p99 ms | Avg p999 ms | Best RPS | Worst p99 ms | Worst p999 ms | Max latency ms | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms | Go Heap MB | Go Goroutines | JVM Heap MB | JVM Direct MB |\n")
-        report.write("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
-        for name, _path, metadata, summary, resources, latency in summaries:
+        report.write("| Group | Run | Profile | Backend model | Dataplane | Flush batch | Flush delay ms | Affinity | Avg RPS | Avg p99 ms | Avg p999 ms | Best RPS | Worst p99 ms | Worst p999 ms | Max latency ms | Max Client Pending | Max Backend Inflight | Max Pipeline Buffered | Error Rate | Avg CPU % | Max RSS MB | Max Threads | GC Max Pause ms | Go Heap MB | Go Goroutines | JVM Heap MB | JVM Direct MB |\n")
+        report.write("|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        for name, _path, metadata, summary, resources, latency, pipeline_metrics in summaries:
             report.write(
                 f"| {metadata.get('run_group', 'unspecified')} "
                 f"| {name} "
                 f"| {metadata.get('bench_profile', 'unspecified')} "
                 f"| {metadata.get('backend_model', 'unspecified')} "
                 f"| {metadata.get('dataplane', 'unspecified')} "
+                f"| {metadata.get('pipeline_flush_batch_size', 'unspecified')} "
+                f"| {metadata.get('pipeline_flush_max_delay_ms', 'unspecified')} "
+                f"| {metadata.get('backend_affinity_strategy', 'unspecified')} "
                 f"| {summary['avg_rps']:.2f} "
                 f"| {summary['avg_p99']:.2f} "
                 f"| {latency.get('avg_p999_ms', 'n/a')} "
@@ -182,6 +231,10 @@ def main() -> int:
                 f"| {summary['worst_p99']:.2f} "
                 f"| {latency.get('worst_p999_ms', 'n/a')} "
                 f"| {latency.get('max_latency_ms', 'n/a')} "
+                f"| {pipeline_metrics.get('max_client_pending', 'n/a')} "
+                f"| {pipeline_metrics.get('max_backend_inflight', 'n/a')} "
+                f"| {pipeline_metrics.get('max_pipeline_buffered', 'n/a')} "
+                f"| {pipeline_metrics.get('pipeline_error_rate', 'n/a')} "
                 f"| {resources.get('avg_cpu_percent', 'n/a')} "
                 f"| {resources.get('max_rss_mb', 'n/a')} "
                 f"| {resources.get('max_threads', 'n/a')} "
@@ -193,7 +246,7 @@ def main() -> int:
             )
 
         report.write("\n## Scenario Comparison\n\n")
-        run_names = [name for name, _path, _metadata, _summary, _resources, _latency in summaries]
+        run_names = [name for name, _path, _metadata, _summary, _resources, _latency, _pipeline_metrics in summaries]
         rps_headers = " | ".join(f"{name} RPS" for name in run_names)
         p99_headers = " | ".join(f"{name} p99" for name in run_names)
         report.write(f"| Clients | Pipeline | Test | {rps_headers} | {p99_headers} | Throughput Winner | p99 Winner |\n")
@@ -211,7 +264,7 @@ def main() -> int:
             )
 
         report.write("\n## Source Results\n\n")
-        for name, path, _metadata, _summary, _resources, _latency in summaries:
+        for name, path, _metadata, _summary, _resources, _latency, _pipeline_metrics in summaries:
             report.write(f"- {name}: `{path}`\n")
 
     print(output)

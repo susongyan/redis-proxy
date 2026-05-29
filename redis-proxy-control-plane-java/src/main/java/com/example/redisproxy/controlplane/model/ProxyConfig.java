@@ -84,6 +84,7 @@ public class ProxyConfig {
         @NotBlank private String defaultCluster = "redis-a";
         private long routeEpoch = 1;
         private int clusterSlotsRefreshIntervalSeconds = 0;
+        private String backendAffinityStrategy = "client";
         @Valid private List<RouteRule> rules = new ArrayList<>();
         public String getDefaultCluster() { return defaultCluster; }
         public void setDefaultCluster(String defaultCluster) { this.defaultCluster = defaultCluster; }
@@ -91,6 +92,8 @@ public class ProxyConfig {
         public void setRouteEpoch(long routeEpoch) { this.routeEpoch = routeEpoch; }
         public int getClusterSlotsRefreshIntervalSeconds() { return clusterSlotsRefreshIntervalSeconds; }
         public void setClusterSlotsRefreshIntervalSeconds(int clusterSlotsRefreshIntervalSeconds) { this.clusterSlotsRefreshIntervalSeconds = clusterSlotsRefreshIntervalSeconds; }
+        public String getBackendAffinityStrategy() { return backendAffinityStrategy; }
+        public void setBackendAffinityStrategy(String backendAffinityStrategy) { this.backendAffinityStrategy = backendAffinityStrategy == null || backendAffinityStrategy.isBlank() ? "client" : backendAffinityStrategy; }
         public List<RouteRule> getRules() { return rules; }
         public void setRules(List<RouteRule> rules) { this.rules = rules; }
     }
@@ -121,11 +124,17 @@ public class ProxyConfig {
 
     public static class Limits {
         @Positive private int maxPipelineDepth = 1024;
+        @Positive private int pipelineFlushBatchSize = 16;
+        private int pipelineFlushMaxDelayMillis = 1;
         @Positive private int maxRequestBytes = 10 * 1024 * 1024;
         @Positive private int maxResponseBytes = 100 * 1024 * 1024;
         private int largeResponseBytes = 1024 * 1024;
         public int getMaxPipelineDepth() { return maxPipelineDepth; }
         public void setMaxPipelineDepth(int maxPipelineDepth) { this.maxPipelineDepth = maxPipelineDepth; }
+        public int getPipelineFlushBatchSize() { return pipelineFlushBatchSize; }
+        public void setPipelineFlushBatchSize(int pipelineFlushBatchSize) { this.pipelineFlushBatchSize = pipelineFlushBatchSize; }
+        public int getPipelineFlushMaxDelayMillis() { return pipelineFlushMaxDelayMillis; }
+        public void setPipelineFlushMaxDelayMillis(int pipelineFlushMaxDelayMillis) { this.pipelineFlushMaxDelayMillis = pipelineFlushMaxDelayMillis; }
         public int getMaxRequestBytes() { return maxRequestBytes; }
         public void setMaxRequestBytes(int maxRequestBytes) { this.maxRequestBytes = maxRequestBytes; }
         public int getMaxResponseBytes() { return maxResponseBytes; }

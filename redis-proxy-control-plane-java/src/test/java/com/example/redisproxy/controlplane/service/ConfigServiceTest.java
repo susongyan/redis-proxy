@@ -64,6 +64,12 @@ class ConfigServiceTest {
         config.getRouting().setClusterSlotsRefreshIntervalSeconds(-1);
         assertThatThrownBy(() -> service.update(config))
                 .isInstanceOf(IllegalArgumentException.class);
+
+        ProxyConfig invalidAffinity = service.get();
+        invalidAffinity.getRouting().setBackendAffinityStrategy("invalid");
+        assertThatThrownBy(() -> service.update(invalidAffinity))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("backendAffinityStrategy");
     }
 
     @Test
@@ -218,9 +224,15 @@ class ConfigServiceTest {
         ProxyConfig next = service.get();
         next.getRouting().setRouteEpoch(2);
         next.getRouting().setDefaultCluster("redis-a");
+        next.getRouting().setBackendAffinityStrategy("keySlot");
+        next.getLimits().setPipelineFlushBatchSize(32);
+        next.getLimits().setPipelineFlushMaxDelayMillis(2);
         service.publish(publishRequest(next, "alice", "publish"));
 
         assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("routing.routeEpoch"));
+        assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("routing.backendAffinityStrategy"));
+        assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("limits.pipelineFlushBatchSize"));
+        assertThat(service.diff(1, 2).changes()).anyMatch(change -> change.contains("limits.pipelineFlushMaxDelayMillis"));
         assertThat(service.version(2).operator()).isEqualTo("alice");
         assertThat(service.routeStatus().currentVersionId()).isEqualTo(2);
         assertThat(service.routeStatus().expectedRouteEpoch()).isEqualTo(2);

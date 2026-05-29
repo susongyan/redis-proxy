@@ -29,6 +29,7 @@ type Router struct {
 	mode            string
 	epoch           int64
 	defaultCluster  string
+	backendAffinity string
 	clusters        map[string]config.ClusterConfig
 	rules           []config.RouteRuleConfig
 	limits          config.LimitsConfig
@@ -78,17 +79,18 @@ func New(cfg *config.Config) (*Router, error) {
 		return nil, fmt.Errorf("default cluster %q not found", cfg.Routing.DefaultCluster)
 	}
 	rt := &Router{
-		proxyID:        cfg.Instance.ProxyID,
-		configHash:     config.SnapshotHash(cfg),
-		mode:           cfg.Mode,
-		epoch:          cfg.Routing.RouteEpoch,
-		defaultCluster: cfg.Routing.DefaultCluster,
-		clusters:       clusters,
-		rules:          append([]config.RouteRuleConfig(nil), cfg.Routing.Rules...),
-		limits:         cfg.Limits,
-		analysis:       cfg.Analysis,
-		governance:     cfg.Governance,
-		states:         states,
+		proxyID:         cfg.Instance.ProxyID,
+		configHash:      config.SnapshotHash(cfg),
+		mode:            cfg.Mode,
+		epoch:           cfg.Routing.RouteEpoch,
+		defaultCluster:  cfg.Routing.DefaultCluster,
+		backendAffinity: cfg.Routing.BackendAffinityStrategy,
+		clusters:        clusters,
+		rules:           append([]config.RouteRuleConfig(nil), cfg.Routing.Rules...),
+		limits:          cfg.Limits,
+		analysis:        cfg.Analysis,
+		governance:      cfg.Governance,
+		states:          states,
 	}
 	rt.lastApplyResult.Store("startup")
 	rt.lastApplyTime.Store(time.Now().Unix())
@@ -160,6 +162,10 @@ func (m *Manager) Limits() config.LimitsConfig {
 
 func (m *Manager) Analysis() config.AnalysisConfig {
 	return m.Current().analysis
+}
+
+func (m *Manager) BackendAffinityStrategy() string {
+	return m.Current().backendAffinity
 }
 
 func (m *Manager) CurrentEpoch() int64 {

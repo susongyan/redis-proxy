@@ -5,8 +5,10 @@ import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
 import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import com.example.redisproxy.dataplane.backend.BackendPool;
 import com.example.redisproxy.dataplane.config.ProxyProperties;
+import com.example.redisproxy.dataplane.netty.PipelineStats;
 import com.example.redisproxy.dataplane.router.RouteResolver;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,14 +23,16 @@ public class AdminController {
     private final HotKeyTracker hotKeyTracker;
     private final LargeKeyTracker largeKeyTracker;
     private final SlowQueryTracker slowQueryTracker;
+    private final PipelineStats pipelineStats;
 
-    public AdminController(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker) {
+    public AdminController(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, PipelineStats pipelineStats) {
         this.properties = properties;
         this.routeResolver = routeResolver;
         this.backendPool = backendPool;
         this.hotKeyTracker = hotKeyTracker;
         this.largeKeyTracker = largeKeyTracker;
         this.slowQueryTracker = slowQueryTracker;
+        this.pipelineStats = pipelineStats;
     }
 
     @GetMapping("/healthz")
@@ -67,6 +71,11 @@ public class AdminController {
     @GetMapping("/debug/slow-queries")
     public List<SlowQueryTracker.Entry> slowQueries(@RequestParam(name = "limit", defaultValue = "100") int limit) {
         return slowQueryTracker.snapshot(limit);
+    }
+
+    @GetMapping("/debug/pipeline")
+    public Map<String, Object> pipeline() {
+        return pipelineStats.snapshot();
     }
 
     private boolean ready() {

@@ -33,7 +33,9 @@ final class RouteConfigHash {
                 "largeResponseBytes", c.getLimits().getLargeResponseBytes(),
                 "maxPipelineDepth", c.getLimits().getMaxPipelineDepth(),
                 "maxRequestBytes", c.getLimits().getMaxRequestBytes(),
-                "maxResponseBytes", c.getLimits().getMaxResponseBytes()));
+                "maxResponseBytes", c.getLimits().getMaxResponseBytes(),
+                "pipelineFlushBatchSize", c.getLimits().getPipelineFlushBatchSize(),
+                "pipelineFlushMaxDelayMillis", c.getLimits().getPipelineFlushMaxDelayMillis()));
         root.put("mode", text(c.getMode()));
         root.put("routing", routing(c.getRouting()));
         return root;
@@ -42,6 +44,7 @@ final class RouteConfigHash {
     private static Map<String, Object> routing(ProxyProperties.Routing routing) {
         return map(
                 "clusterSlotsRefreshIntervalSeconds", routing.getClusterSlotsRefreshIntervalSeconds(),
+                "backendAffinityStrategy", text(routing.getBackendAffinityStrategy()),
                 "defaultCluster", text(routing.getDefaultCluster()),
                 "routeEpoch", routing.getRouteEpoch(),
                 "rules", routeRules(routing.getRules()));

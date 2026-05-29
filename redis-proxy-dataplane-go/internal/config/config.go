@@ -54,6 +54,7 @@ type RoutingConfig struct {
 	DefaultCluster                     string            `yaml:"defaultCluster" json:"defaultCluster"`
 	RouteEpoch                         int64             `yaml:"routeEpoch" json:"routeEpoch"`
 	ClusterSlotsRefreshIntervalSeconds int               `yaml:"clusterSlotsRefreshIntervalSeconds" json:"clusterSlotsRefreshIntervalSeconds"`
+	BackendAffinityStrategy            string            `yaml:"backendAffinityStrategy" json:"backendAffinityStrategy"`
 	Rules                              []RouteRuleConfig `yaml:"rules" json:"rules"`
 }
 
@@ -68,10 +69,12 @@ type RouteRuleConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxPipelineDepth   int `yaml:"maxPipelineDepth" json:"maxPipelineDepth"`
-	MaxRequestBytes    int `yaml:"maxRequestBytes" json:"maxRequestBytes"`
-	MaxResponseBytes   int `yaml:"maxResponseBytes" json:"maxResponseBytes"`
-	LargeResponseBytes int `yaml:"largeResponseBytes" json:"largeResponseBytes"`
+	MaxPipelineDepth            int `yaml:"maxPipelineDepth" json:"maxPipelineDepth"`
+	PipelineFlushBatchSize      int `yaml:"pipelineFlushBatchSize" json:"pipelineFlushBatchSize"`
+	PipelineFlushMaxDelayMillis int `yaml:"pipelineFlushMaxDelayMillis" json:"pipelineFlushMaxDelayMillis"`
+	MaxRequestBytes             int `yaml:"maxRequestBytes" json:"maxRequestBytes"`
+	MaxResponseBytes            int `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+	LargeResponseBytes          int `yaml:"largeResponseBytes" json:"largeResponseBytes"`
 }
 
 type AnalysisConfig struct {
@@ -194,6 +197,12 @@ func applyDefaults(cfg *Config) {
 	if cfg.Limits.MaxPipelineDepth == 0 {
 		cfg.Limits.MaxPipelineDepth = 1024
 	}
+	if cfg.Limits.PipelineFlushBatchSize == 0 {
+		cfg.Limits.PipelineFlushBatchSize = 16
+	}
+	if cfg.Limits.PipelineFlushMaxDelayMillis == 0 {
+		cfg.Limits.PipelineFlushMaxDelayMillis = 1
+	}
 	if cfg.Limits.MaxRequestBytes == 0 {
 		cfg.Limits.MaxRequestBytes = 10 * 1024 * 1024
 	}
@@ -202,6 +211,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Limits.LargeResponseBytes == 0 {
 		cfg.Limits.LargeResponseBytes = 1024 * 1024
+	}
+	if cfg.Routing.BackendAffinityStrategy == "" {
+		cfg.Routing.BackendAffinityStrategy = "client"
 	}
 	applyAnalysisDefaults(&cfg.Analysis)
 	if cfg.ControlPlane.PollIntervalSeconds == 0 {
@@ -265,8 +277,11 @@ func (c *Config) Validate() error {
 	if c.ControlPlane.RequestTimeoutMillis < 0 {
 		return errors.New("controlPlane.requestTimeoutMillis must be >= 0")
 	}
-	if c.Limits.MaxPipelineDepth <= 0 || c.Limits.MaxRequestBytes <= 0 || c.Limits.MaxResponseBytes <= 0 || c.Limits.LargeResponseBytes < 0 {
-		return errors.New("limits must be positive and largeResponseBytes must be >= 0")
+	if c.Limits.MaxPipelineDepth <= 0 || c.Limits.PipelineFlushBatchSize <= 0 || c.Limits.PipelineFlushMaxDelayMillis < 0 || c.Limits.MaxRequestBytes <= 0 || c.Limits.MaxResponseBytes <= 0 || c.Limits.LargeResponseBytes < 0 {
+		return errors.New("limits must be positive, pipelineFlushMaxDelayMillis must be >= 0 and largeResponseBytes must be >= 0")
+	}
+	if !validBackendAffinityStrategy(c.Routing.BackendAffinityStrategy) {
+		return fmt.Errorf("routing.backendAffinityStrategy must be client, keySlot or hashTag")
 	}
 	if err := c.validateAnalysis(); err != nil {
 		return err
@@ -315,6 +330,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func validBackendAffinityStrategy(strategy string) bool {
+	return strategy == "client" || strategy == "keySlot" || strategy == "hashTag"
 }
 
 func applyAnalysisDefaults(analysis *AnalysisConfig) {

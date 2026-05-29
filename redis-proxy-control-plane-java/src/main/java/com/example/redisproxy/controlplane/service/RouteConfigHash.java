@@ -33,10 +33,13 @@ final class RouteConfigHash {
                         "largeResponseBytes", c.getLimits().getLargeResponseBytes(),
                         "maxPipelineDepth", c.getLimits().getMaxPipelineDepth(),
                         "maxRequestBytes", c.getLimits().getMaxRequestBytes(),
-                        "maxResponseBytes", c.getLimits().getMaxResponseBytes()),
+                        "maxResponseBytes", c.getLimits().getMaxResponseBytes(),
+                        "pipelineFlushBatchSize", c.getLimits().getPipelineFlushBatchSize(),
+                        "pipelineFlushMaxDelayMillis", c.getLimits().getPipelineFlushMaxDelayMillis()),
                 "mode", text(c.getMode()),
                 "routing", map(
                         "clusterSlotsRefreshIntervalSeconds", c.getRouting().getClusterSlotsRefreshIntervalSeconds(),
+                        "backendAffinityStrategy", text(c.getRouting().getBackendAffinityStrategy()),
                         "defaultCluster", text(c.getRouting().getDefaultCluster()),
                         "routeEpoch", c.getRouting().getRouteEpoch(),
                         "rules", rules(c.getRouting().getRules())));

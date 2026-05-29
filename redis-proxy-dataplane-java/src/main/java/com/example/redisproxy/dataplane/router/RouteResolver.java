@@ -229,6 +229,14 @@ public class RouteResolver {
         return snapshot.get().properties().getRouting().getRouteEpoch();
     }
 
+    public int backendAffinity(RespRequest request, int clientAffinity) {
+        String strategy = snapshot.get().properties().getRouting().getBackendAffinityStrategy();
+        if (("keySlot".equals(strategy) || "hashTag".equals(strategy)) && request.argCount() >= 2) {
+            return request.arg(1).slot();
+        }
+        return clientAffinity;
+    }
+
     public SnapshotInfo snapshotInfo() {
         Snapshot current = snapshot.get();
         return new SnapshotInfo(

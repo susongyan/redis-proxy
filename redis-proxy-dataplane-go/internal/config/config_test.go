@@ -11,6 +11,12 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 	if cfg.Limits.LargeResponseBytes != 1024*1024 {
 		t.Fatalf("largeResponseBytes=%d want 1048576", cfg.Limits.LargeResponseBytes)
 	}
+	if cfg.Limits.PipelineFlushBatchSize != 16 || cfg.Limits.PipelineFlushMaxDelayMillis != 1 {
+		t.Fatalf("pipeline flush defaults=%+v", cfg.Limits)
+	}
+	if cfg.Routing.BackendAffinityStrategy != "client" {
+		t.Fatalf("backendAffinityStrategy=%q want client", cfg.Routing.BackendAffinityStrategy)
+	}
 	if !cfg.Analysis.HotKey.IsEnabled() {
 		t.Fatal("hotKey.enabled=false want true by default")
 	}
@@ -189,6 +195,18 @@ func TestSnapshotHashChangesForGovernanceLimitsAndAnalysis(t *testing.T) {
 	}
 
 	base = SnapshotHash(&cfg)
+	cfg.Limits.PipelineFlushBatchSize++
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("pipeline flush limit change did not change snapshot hash")
+	}
+
+	base = SnapshotHash(&cfg)
+	cfg.Routing.BackendAffinityStrategy = "keySlot"
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("backend affinity change did not change snapshot hash")
+	}
+
+	base = SnapshotHash(&cfg)
 	cfg.Analysis.HotKey.MetricsTopN++
 	if got := SnapshotHash(&cfg); got == base {
 		t.Fatal("analysis change did not change snapshot hash")
@@ -204,8 +222,8 @@ func validConfig() Config {
 			Name:  "redis-a",
 			Nodes: []string{"127.0.0.1:7000"},
 		}}},
-		Routing: RoutingConfig{DefaultCluster: "redis-a"},
-		Limits:  LimitsConfig{MaxPipelineDepth: 1024, MaxRequestBytes: 1024, MaxResponseBytes: 1024, LargeResponseBytes: 512},
+		Routing: RoutingConfig{DefaultCluster: "redis-a", BackendAffinityStrategy: "client"},
+		Limits:  LimitsConfig{MaxPipelineDepth: 1024, PipelineFlushBatchSize: 16, PipelineFlushMaxDelayMillis: 1, MaxRequestBytes: 1024, MaxResponseBytes: 1024, LargeResponseBytes: 512},
 		Analysis: AnalysisConfig{HotKey: HotKeyAnalysisConfig{
 			WindowSeconds:  60,
 			BucketMillis:   1000,

@@ -41,14 +41,15 @@ type Server struct {
 }
 
 type completion struct {
-	seq      uint64
-	command  string
-	response []byte
-	err      error
-	start    time.Time
-	backend  time.Duration
-	largeCtx analysis.LargeKeyContext
-	slowCtx  analysis.SlowQueryContext
+	seq         uint64
+	command     string
+	response    []byte
+	err         error
+	start       time.Time
+	backend     time.Duration
+	completedAt time.Time
+	largeCtx    analysis.LargeKeyContext
+	slowCtx     analysis.SlowQueryContext
 }
 
 func NewServer(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, onMoved func(), hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) *Server {
@@ -157,9 +158,9 @@ func (s *Server) handle(conn net.Conn) {
 		pending.Add(1)
 		s.metrics.ClientPending.Inc()
 
-		if int(pending.Load()) > s.cfg.Limits.MaxPipelineDepth {
+		if int(pending.Load()) > s.router.Limits().MaxPipelineDepth {
 			s.metrics.Errors.WithLabelValues("pipeline_limit").Inc()
-			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, err: errors.New("pipeline depth exceeded"), start: start})
+			s.enqueueCompletion(completions, clientDone, completion{seq: current, command: cmd, response: protocol.ErrorFrame("pipeline depth exceeded"), start: start})
 			continue
 		}
 
@@ -220,9 +221,10 @@ func (s *Server) handle(conn net.Conn) {
 		s.metrics.RouteDecisions.WithLabelValues(decision.Cluster, decision.Rule).Inc()
 
 		backendStart := time.Now()
-		err = s.backends.DoAsyncAffinity(decision.Addr, affinity, req.Raw, func(result backend.Result) {
+		requestAffinity := s.requestAffinity(affinity, req)
+		err = s.backends.DoAsyncAffinity(decision.Addr, requestAffinity, req.Raw, func(result backend.Result) {
 			s.nsLimiter.finishRequest(requestNamespace)
-			s.completeBackendResult(completions, clientDone, current, cmd, start, backendStart, decision, affinity, req.Raw, result, false, largeCtx, slowCtx)
+			s.completeBackendResult(completions, clientDone, current, cmd, start, backendStart, decision, requestAffinity, req.Raw, result, false, largeCtx, slowCtx)
 		})
 		if err != nil {
 			s.nsLimiter.finishRequest(requestNamespace)
@@ -279,37 +281,106 @@ func (s *Server) completeBackendResult(completions chan<- completion, clientDone
 func (s *Server) writeResponses(conn net.Conn, completions <-chan completion, clientDone <-chan struct{}, pending *atomic.Int64) {
 	next := uint64(0)
 	buffered := map[uint64]completion{}
+	batchSize := max(1, s.router.Limits().PipelineFlushBatchSize)
+	maxDelay := time.Duration(s.router.Limits().PipelineFlushMaxDelayMillis) * time.Millisecond
 	for {
 		select {
 		case <-clientDone:
 			return
 		case item := <-completions:
 			buffered[item.seq] = item
-			for {
-				current, ok := buffered[next]
-				if !ok {
-					break
-				}
-				delete(buffered, next)
-				next++
-				if !s.writeOne(conn, current, pending) {
-					return
-				}
+			if item.seq > next {
+				s.metrics.ObservePipelineHOLBlocked("backend_pending", len(buffered))
+			}
+			s.metrics.ObservePipelineBuffered(len(buffered))
+			current, ok := buffered[next]
+			if !ok {
+				continue
+			}
+			delete(buffered, next)
+			next++
+			batch, ok := s.collectResponseBatch(current, &next, buffered, completions, clientDone, batchSize, maxDelay)
+			if !ok {
+				return
+			}
+			s.metrics.ObservePipelineBuffered(len(buffered))
+			if !s.writeBatch(conn, batch, pending) {
+				return
 			}
 		}
 	}
 }
 
-func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64) bool {
-	defer func() {
-		pending.Add(-1)
-		s.metrics.ClientPending.Dec()
-	}()
+func (s *Server) collectResponseBatch(first completion, next *uint64, buffered map[uint64]completion, completions <-chan completion, clientDone <-chan struct{}, batchSize int, maxDelay time.Duration) ([]completion, bool) {
+	batch := []completion{first}
+	for len(batch) < batchSize {
+		current, ok := buffered[*next]
+		if !ok {
+			break
+		}
+		delete(buffered, *next)
+		*next = *next + 1
+		batch = append(batch, current)
+	}
+	if len(batch) >= batchSize || maxDelay <= 0 {
+		return batch, true
+	}
+	timer := time.NewTimer(maxDelay)
+	defer timer.Stop()
+	for len(batch) < batchSize {
+		select {
+		case <-clientDone:
+			return nil, false
+		case <-timer.C:
+			return batch, true
+		case item := <-completions:
+			buffered[item.seq] = item
+			if item.seq > *next {
+				s.metrics.ObservePipelineHOLBlocked("backend_pending", len(buffered))
+			}
+			for len(batch) < batchSize {
+				current, ok := buffered[*next]
+				if !ok {
+					break
+				}
+				delete(buffered, *next)
+				*next = *next + 1
+				batch = append(batch, current)
+			}
+		}
+	}
+	return batch, true
+}
+
+func (s *Server) writeBatch(conn net.Conn, batch []completion, pending *atomic.Int64) bool {
+	var out bytes.Buffer
+	for _, item := range batch {
+		payload := s.prepareResponse(item, pending)
+		if len(payload) > 0 {
+			out.Write(payload)
+		}
+	}
+	s.metrics.ObservePipelineFlushBatch(len(batch))
+	if out.Len() == 0 {
+		return true
+	}
+	if _, err := conn.Write(out.Bytes()); err != nil {
+		s.metrics.Errors.WithLabelValues("client_write").Inc()
+		return false
+	}
+	return true
+}
+
+func (s *Server) prepareResponse(item completion, pending *atomic.Int64) []byte {
+	pending.Add(-1)
+	s.metrics.ClientPending.Dec()
+	if !item.completedAt.IsZero() {
+		s.metrics.ObservePipelineHOLWait(time.Since(item.completedAt).Milliseconds())
+	}
 	if item.err != nil {
 		s.metrics.Errors.WithLabelValues("backend").Inc()
 		s.slowQueries.Observe(item.slowCtx, time.Since(item.start), item.backend)
-		_, err := conn.Write(protocol.ErrorFrame("backend unavailable"))
-		return err == nil
+		return protocol.ErrorFrame("backend unavailable")
 	}
 	if bytes.HasPrefix(item.response, []byte("-MOVED ")) {
 		s.metrics.Moved.Inc()
@@ -324,12 +395,8 @@ func (s *Server) writeOne(conn net.Conn, item completion, pending *atomic.Int64)
 	s.observeResponseSize(item.command, len(item.response))
 	s.largeKeys.ObserveResponse(item.largeCtx, len(item.response))
 	s.slowQueries.Observe(item.slowCtx, time.Since(item.start), item.backend)
-	if _, err := conn.Write(item.response); err != nil {
-		s.metrics.Errors.WithLabelValues("client_write").Inc()
-		return false
-	}
 	s.metrics.Latency.WithLabelValues(strings.ToUpper(item.command)).Observe(time.Since(item.start).Seconds())
-	return true
+	return item.response
 }
 
 func (s *Server) observeResponseSize(command string, size int) {
@@ -342,8 +409,21 @@ func (s *Server) observeResponseSize(command string, size int) {
 }
 
 func (s *Server) enqueueCompletion(ch chan<- completion, done <-chan struct{}, item completion) {
+	item.completedAt = time.Now()
 	select {
 	case ch <- item:
 	case <-done:
 	}
+}
+
+func (s *Server) requestAffinity(clientAffinity uint64, req protocol.Request) uint64 {
+	strategy := s.router.BackendAffinityStrategy()
+	key, ok := router.RawKey(req.Args)
+	switch strategy {
+	case "keySlot", "hashTag":
+		if ok {
+			return uint64(router.Slot(key))
+		}
+	}
+	return clientAffinity
 }

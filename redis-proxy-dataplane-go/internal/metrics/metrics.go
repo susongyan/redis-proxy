@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"sync/atomic"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -20,6 +22,10 @@ type Registry struct {
 	BackendInflight        prometheus.Gauge
 	BackendInflightByNode  *prometheus.GaugeVec
 	ClientPending          prometheus.Gauge
+	PipelineBuffered       prometheus.Gauge
+	PipelineFlushBatch     prometheus.Histogram
+	PipelineHOLBlocked     *prometheus.CounterVec
+	PipelineHOLMaxWait     prometheus.Gauge
 	Moved                  prometheus.Counter
 	Ask                    prometheus.Counter
 	AskRedirects           *prometheus.CounterVec
@@ -61,6 +67,12 @@ type Registry struct {
 	SlowQueryTracked       prometheus.Gauge
 	SlowQueryE2EThresh     prometheus.Gauge
 	SlowQueryBackendThresh prometheus.Gauge
+	pipelineBuffered       atomic.Int64
+	pipelineFlushes        atomic.Int64
+	pipelineLastBatch      atomic.Int64
+	pipelineMaxBatch       atomic.Int64
+	pipelineHOLBlocked     atomic.Int64
+	pipelineHOLMaxWaitMs   atomic.Int64
 }
 
 func NewRegistry() *Registry {
@@ -79,6 +91,10 @@ func NewRegistry() *Registry {
 	r.BackendInflight = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_backend_inflight", Help: "Inflight backend requests"})
 	r.BackendInflightByNode = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "redis_proxy_backend_inflight_by_node", Help: "Inflight backend requests by Redis node"}, []string{"node"})
 	r.ClientPending = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_client_pending_responses", Help: "Pending client responses"})
+	r.PipelineBuffered = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_pipeline_buffered_responses", Help: "Client sequencer responses buffered behind a missing earlier sequence"})
+	r.PipelineFlushBatch = prometheus.NewHistogram(prometheus.HistogramOpts{Name: "redis_proxy_pipeline_flush_batch_size", Help: "Number of responses flushed per client write batch", Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128}})
+	r.PipelineHOLBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_pipeline_hol_blocked_total", Help: "Client responses blocked by an earlier missing sequence"}, []string{"reason"})
+	r.PipelineHOLMaxWait = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_pipeline_hol_max_wait_millis", Help: "Maximum observed client sequencer wait in milliseconds"})
 	r.Moved = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_moved_total", Help: "MOVED responses"})
 	r.Ask = prometheus.NewCounter(prometheus.CounterOpts{Name: "redis_proxy_ask_total", Help: "ASK responses"})
 	r.AskRedirects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_ask_redirect_total", Help: "ASKING retry attempts by result"}, []string{"result"})
@@ -137,6 +153,10 @@ func NewRegistry() *Registry {
 		r.BackendInflight,
 		r.BackendInflightByNode,
 		r.ClientPending,
+		r.PipelineBuffered,
+		r.PipelineFlushBatch,
+		r.PipelineHOLBlocked,
+		r.PipelineHOLMaxWait,
 		r.Moved,
 		r.Ask,
 		r.AskRedirects,
@@ -180,4 +200,67 @@ func NewRegistry() *Registry {
 		r.SlowQueryBackendThresh,
 	)
 	return r
+}
+
+type PipelineSnapshot struct {
+	BufferedResponses  int64 `json:"bufferedResponses"`
+	Flushes            int64 `json:"flushes"`
+	LastFlushBatchSize int64 `json:"lastFlushBatchSize"`
+	MaxFlushBatchSize  int64 `json:"maxFlushBatchSize"`
+	HOLBlocked         int64 `json:"holBlocked"`
+	HOLMaxWaitMillis   int64 `json:"holMaxWaitMillis"`
+}
+
+func (r *Registry) ObservePipelineBuffered(size int) {
+	r.pipelineBuffered.Store(int64(size))
+	r.PipelineBuffered.Set(float64(size))
+}
+
+func (r *Registry) ObservePipelineFlushBatch(size int) {
+	if size <= 0 {
+		return
+	}
+	value := int64(size)
+	r.pipelineFlushes.Add(1)
+	r.pipelineLastBatch.Store(value)
+	for {
+		current := r.pipelineMaxBatch.Load()
+		if value <= current || r.pipelineMaxBatch.CompareAndSwap(current, value) {
+			break
+		}
+	}
+	r.PipelineFlushBatch.Observe(float64(size))
+}
+
+func (r *Registry) ObservePipelineHOLBlocked(reason string, buffered int) {
+	if reason == "" {
+		reason = "backend_pending"
+	}
+	r.pipelineHOLBlocked.Add(1)
+	r.PipelineHOLBlocked.WithLabelValues(reason).Inc()
+	r.ObservePipelineBuffered(buffered)
+}
+
+func (r *Registry) ObservePipelineHOLWait(waitMillis int64) {
+	if waitMillis <= 0 {
+		return
+	}
+	for {
+		current := r.pipelineHOLMaxWaitMs.Load()
+		if waitMillis <= current || r.pipelineHOLMaxWaitMs.CompareAndSwap(current, waitMillis) {
+			break
+		}
+	}
+	r.PipelineHOLMaxWait.Set(float64(r.pipelineHOLMaxWaitMs.Load()))
+}
+
+func (r *Registry) PipelineSnapshot() PipelineSnapshot {
+	return PipelineSnapshot{
+		BufferedResponses:  r.pipelineBuffered.Load(),
+		Flushes:            r.pipelineFlushes.Load(),
+		LastFlushBatchSize: r.pipelineLastBatch.Load(),
+		MaxFlushBatchSize:  r.pipelineMaxBatch.Load(),
+		HOLBlocked:         r.pipelineHOLBlocked.Load(),
+		HOLMaxWaitMillis:   r.pipelineHOLMaxWaitMs.Load(),
+	}
 }

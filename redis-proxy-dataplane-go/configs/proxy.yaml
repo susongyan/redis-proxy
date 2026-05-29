@@ -20,6 +20,7 @@ backends:
 routing:
   defaultCluster: "redis-a"
   routeEpoch: 1
+  backendAffinityStrategy: "client"
 
 controlPlane:
   enabled: false
@@ -30,6 +31,8 @@ controlPlane:
 
 limits:
   maxPipelineDepth: 1024
+  pipelineFlushBatchSize: 16
+  pipelineFlushMaxDelayMillis: 1
   maxRequestBytes: 10485760
   maxResponseBytes: 104857600
   largeResponseBytes: 1048576

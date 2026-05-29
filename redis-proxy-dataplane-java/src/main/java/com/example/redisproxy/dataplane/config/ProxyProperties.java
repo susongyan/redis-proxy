@@ -36,11 +36,14 @@ public class ProxyProperties {
         if (routing.clusterSlotsRefreshIntervalSeconds < 0) {
             throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
         }
+        if (!List.of("client", "keySlot", "hashTag").contains(routing.backendAffinityStrategy)) {
+            throw new IllegalArgumentException("routing.backendAffinityStrategy must be client, keySlot or hashTag");
+        }
         if (routing.routeEpoch < 0) {
             throw new IllegalArgumentException("routing.routeEpoch must be >= 0");
         }
-        if (limits.maxPipelineDepth <= 0 || limits.maxRequestBytes <= 0 || limits.maxResponseBytes <= 0 || limits.largeResponseBytes < 0) {
-            throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
+        if (limits.maxPipelineDepth <= 0 || limits.pipelineFlushBatchSize <= 0 || limits.pipelineFlushMaxDelayMillis < 0 || limits.maxRequestBytes <= 0 || limits.maxResponseBytes <= 0 || limits.largeResponseBytes < 0) {
+            throw new IllegalArgumentException("limits must be positive, pipelineFlushMaxDelayMillis must be >= 0 and largeResponseBytes must be >= 0");
         }
         analysis.validate();
         if (controlPlane.enabled && (controlPlane.url == null || controlPlane.url.isBlank())) {
@@ -180,6 +183,7 @@ public class ProxyProperties {
         private String defaultCluster;
         private long routeEpoch = 1;
         private int clusterSlotsRefreshIntervalSeconds = 0;
+        private String backendAffinityStrategy = "client";
         private List<RouteRule> rules = new ArrayList<>();
         public String getDefaultCluster() { return defaultCluster; }
         public void setDefaultCluster(String defaultCluster) { this.defaultCluster = defaultCluster; }
@@ -187,6 +191,8 @@ public class ProxyProperties {
         public void setRouteEpoch(long routeEpoch) { this.routeEpoch = routeEpoch; }
         public int getClusterSlotsRefreshIntervalSeconds() { return clusterSlotsRefreshIntervalSeconds; }
         public void setClusterSlotsRefreshIntervalSeconds(int clusterSlotsRefreshIntervalSeconds) { this.clusterSlotsRefreshIntervalSeconds = clusterSlotsRefreshIntervalSeconds; }
+        public String getBackendAffinityStrategy() { return backendAffinityStrategy; }
+        public void setBackendAffinityStrategy(String backendAffinityStrategy) { this.backendAffinityStrategy = backendAffinityStrategy == null || backendAffinityStrategy.isBlank() ? "client" : backendAffinityStrategy; }
         public List<RouteRule> getRules() { return rules; }
         public void setRules(List<RouteRule> rules) { this.rules = rules; }
     }
@@ -235,11 +241,17 @@ public class ProxyProperties {
 
     public static class Limits {
         private int maxPipelineDepth = 1024;
+        private int pipelineFlushBatchSize = 16;
+        private int pipelineFlushMaxDelayMillis = 1;
         private int maxRequestBytes = 10 * 1024 * 1024;
         private int maxResponseBytes = 100 * 1024 * 1024;
         private int largeResponseBytes = 1024 * 1024;
         public int getMaxPipelineDepth() { return maxPipelineDepth; }
         public void setMaxPipelineDepth(int maxPipelineDepth) { this.maxPipelineDepth = maxPipelineDepth; }
+        public int getPipelineFlushBatchSize() { return pipelineFlushBatchSize; }
+        public void setPipelineFlushBatchSize(int pipelineFlushBatchSize) { this.pipelineFlushBatchSize = pipelineFlushBatchSize; }
+        public int getPipelineFlushMaxDelayMillis() { return pipelineFlushMaxDelayMillis; }
+        public void setPipelineFlushMaxDelayMillis(int pipelineFlushMaxDelayMillis) { this.pipelineFlushMaxDelayMillis = pipelineFlushMaxDelayMillis; }
         public int getMaxRequestBytes() { return maxRequestBytes; }
         public void setMaxRequestBytes(int maxRequestBytes) { this.maxRequestBytes = maxRequestBytes; }
         public int getMaxResponseBytes() { return maxResponseBytes; }

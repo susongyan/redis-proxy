@@ -10,6 +10,7 @@
 
 尾延迟实验工作区说明已独立到 [tail-latency-comparison-workspace.md](docs/tail-latency-comparison-workspace.md)。
 TCP 应用与 Kafka / RocketMQ 零拷贝差异说明见 [zero-copy-networking-notes.md](docs/zero-copy-networking-notes.md)。
+客户端 pipeline 处理机制说明见 [pipeline-processing.md](docs/pipeline-processing.md)。
 
 ## 设计目标
 
@@ -66,6 +67,7 @@ Go 数据面：
 - 使用标准 `net` + goroutine 模型。
 - backend 采用异步连接池，每条 backend 连接维护 FIFO inflight 队列。
 - client response sequencer 保证 pipeline 响应顺序。
+- pipeline 处理细节见 [pipeline-processing.md](docs/pipeline-processing.md)。
 - 当前本地 benchmark 中，Go async 在同组 async backend 对比里吞吐和 p99 都优于 Java async。
 
 Java 数据面：
@@ -166,6 +168,7 @@ routing:
   defaultCluster: "redis-a"
   routeEpoch: 1
   clusterSlotsRefreshIntervalSeconds: 30
+  backendAffinityStrategy: "client" # client | keySlot | hashTag
   rules:
     - name: "gray-user-cache"
       cluster: "redis-b"
@@ -180,6 +183,8 @@ routing:
 
 limits:
   maxPipelineDepth: 1024
+  pipelineFlushBatchSize: 16
+  pipelineFlushMaxDelayMillis: 1
   maxRequestBytes: 10485760
   maxResponseBytes: 104857600
   largeResponseBytes: 1048576

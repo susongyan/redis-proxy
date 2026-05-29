@@ -98,9 +98,12 @@ public class ConfigService {
         addChange(changes, "mode", a.getMode(), b.getMode());
         addChange(changes, "routing.routeEpoch", a.getRouting().getRouteEpoch(), b.getRouting().getRouteEpoch());
         addChange(changes, "routing.defaultCluster", a.getRouting().getDefaultCluster(), b.getRouting().getDefaultCluster());
+        addChange(changes, "routing.backendAffinityStrategy", a.getRouting().getBackendAffinityStrategy(), b.getRouting().getBackendAffinityStrategy());
         addChange(changes, "routing.rules", summarizeRules(a), summarizeRules(b));
         addChange(changes, "backends.clusters", summarizeClusters(a), summarizeClusters(b));
         addChange(changes, "limits.maxPipelineDepth", a.getLimits().getMaxPipelineDepth(), b.getLimits().getMaxPipelineDepth());
+        addChange(changes, "limits.pipelineFlushBatchSize", a.getLimits().getPipelineFlushBatchSize(), b.getLimits().getPipelineFlushBatchSize());
+        addChange(changes, "limits.pipelineFlushMaxDelayMillis", a.getLimits().getPipelineFlushMaxDelayMillis(), b.getLimits().getPipelineFlushMaxDelayMillis());
         addChange(changes, "limits.maxRequestBytes", a.getLimits().getMaxRequestBytes(), b.getLimits().getMaxRequestBytes());
         addChange(changes, "limits.maxResponseBytes", a.getLimits().getMaxResponseBytes(), b.getLimits().getMaxResponseBytes());
         addChange(changes, "limits.largeResponseBytes", a.getLimits().getLargeResponseBytes(), b.getLimits().getLargeResponseBytes());
@@ -195,11 +198,16 @@ public class ConfigService {
         if (config.getRouting().getClusterSlotsRefreshIntervalSeconds() < 0) {
             throw new IllegalArgumentException("routing.clusterSlotsRefreshIntervalSeconds must be >= 0");
         }
+        if (!List.of("client", "keySlot", "hashTag").contains(config.getRouting().getBackendAffinityStrategy())) {
+            throw new IllegalArgumentException("routing.backendAffinityStrategy must be client, keySlot or hashTag");
+        }
         if (config.getLimits().getMaxPipelineDepth() <= 0
+                || config.getLimits().getPipelineFlushBatchSize() <= 0
+                || config.getLimits().getPipelineFlushMaxDelayMillis() < 0
                 || config.getLimits().getMaxRequestBytes() <= 0
                 || config.getLimits().getMaxResponseBytes() <= 0
                 || config.getLimits().getLargeResponseBytes() < 0) {
-            throw new IllegalArgumentException("limits must be positive and largeResponseBytes must be >= 0");
+            throw new IllegalArgumentException("limits must be positive, pipelineFlushMaxDelayMillis must be >= 0 and largeResponseBytes must be >= 0");
         }
         validateAnalysis(config.getAnalysis());
         List<String> namespaceNames = config.getGovernance().getNamespaces().stream()
@@ -446,8 +454,11 @@ public class ConfigService {
         copy.getRouting().setDefaultCluster(source.getRouting().getDefaultCluster());
         copy.getRouting().setRouteEpoch(source.getRouting().getRouteEpoch());
         copy.getRouting().setClusterSlotsRefreshIntervalSeconds(source.getRouting().getClusterSlotsRefreshIntervalSeconds());
+        copy.getRouting().setBackendAffinityStrategy(source.getRouting().getBackendAffinityStrategy());
         copy.getRouting().setRules(copyRules(source.getRouting().getRules()));
         copy.getLimits().setMaxPipelineDepth(source.getLimits().getMaxPipelineDepth());
+        copy.getLimits().setPipelineFlushBatchSize(source.getLimits().getPipelineFlushBatchSize());
+        copy.getLimits().setPipelineFlushMaxDelayMillis(source.getLimits().getPipelineFlushMaxDelayMillis());
         copy.getLimits().setMaxRequestBytes(source.getLimits().getMaxRequestBytes());
         copy.getLimits().setMaxResponseBytes(source.getLimits().getMaxResponseBytes());
         copy.getLimits().setLargeResponseBytes(source.getLimits().getLargeResponseBytes());

@@ -172,6 +172,25 @@ class RouteResolverTest {
         assertThat(RouteConfigHash.hash(properties)).isNotEqualTo(base);
     }
 
+    @Test
+    void backendAffinitySupportsClientAndKeyBasedStrategies() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+        RespRequest request = request("GET", "{user}:1");
+        assertThat(resolver.backendAffinity(request, 123)).isEqualTo(123);
+
+        properties = properties("127.0.0.1:6379");
+        properties.getRouting().setBackendAffinityStrategy("keySlot");
+        resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+        assertThat(resolver.backendAffinity(request, 123)).isEqualTo(request.arg(1).slot());
+
+        properties = properties("127.0.0.1:6379");
+        properties.getRouting().setBackendAffinityStrategy("hashTag");
+        resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+        assertThat(resolver.backendAffinity(request, 123)).isEqualTo(request.arg(1).slot());
+        assertThat(resolver.backendAffinity(request("PING"), 123)).isEqualTo(123);
+    }
+
     private static RouteResolver resolver(String... nodes) {
         return new RouteResolver(properties(nodes), new SimpleMeterRegistry());
     }

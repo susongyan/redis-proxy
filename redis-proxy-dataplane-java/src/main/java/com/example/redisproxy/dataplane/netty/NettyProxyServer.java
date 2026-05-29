@@ -37,6 +37,7 @@ public class NettyProxyServer {
     private final HotKeyTracker hotKeyTracker;
     private final LargeKeyTracker largeKeyTracker;
     private final SlowQueryTracker slowQueryTracker;
+    private final PipelineStats pipelineStats;
     private final MeterRegistry registry;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -44,7 +45,7 @@ public class NettyProxyServer {
     private final AtomicInteger activeConnections = new AtomicInteger();
     private final AtomicInteger pendingClientResponses = new AtomicInteger();
 
-    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, MeterRegistry registry) {
+    public NettyProxyServer(ProxyProperties properties, RouteResolver routeResolver, ClusterSlotRefresher slotRefresher, BackendPool backendPool, NamespaceLimiter namespaceLimiter, KeyGovernanceLimiter keyGovernanceLimiter, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, PipelineStats pipelineStats, MeterRegistry registry) {
         this.properties = properties;
         this.routeResolver = routeResolver;
         this.slotRefresher = slotRefresher;
@@ -54,6 +55,7 @@ public class NettyProxyServer {
         this.hotKeyTracker = hotKeyTracker;
         this.largeKeyTracker = largeKeyTracker;
         this.slowQueryTracker = slowQueryTracker;
+        this.pipelineStats = pipelineStats;
         this.registry = registry;
     }
 
@@ -73,7 +75,7 @@ public class NettyProxyServer {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new RespRequestDecoder(properties.getLimits().getMaxRequestBytes()));
-                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, hotKeyTracker, largeKeyTracker, slowQueryTracker, registry, activeConnections, pendingClientResponses));
+                        ch.pipeline().addLast(new ProxyChannelHandler(routeResolver, backendPool, slotRefresher, namespaceLimiter, keyGovernanceLimiter, hotKeyTracker, largeKeyTracker, slowQueryTracker, pipelineStats, registry, activeConnections, pendingClientResponses));
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress(listen.host(), listen.port())).sync().channel();

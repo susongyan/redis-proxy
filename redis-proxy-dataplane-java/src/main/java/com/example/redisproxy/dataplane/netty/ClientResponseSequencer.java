@@ -5,7 +5,8 @@ import com.example.redisproxy.dataplane.analysis.LargeKeyTracker;
 import com.example.redisproxy.dataplane.analysis.SlowQueryTracker;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.function.Consumer;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class ClientResponseSequencer {
     private long nextSequence;
@@ -16,15 +17,17 @@ public final class ClientResponseSequencer {
         return nextSequence++;
     }
 
-    public void complete(long sequence, PendingResponse response, Consumer<PendingResponse> flusher) {
+    public Result complete(long sequence, PendingResponse response) {
+        boolean blocked = sequence > nextFlushSequence;
         pending.put(sequence, response);
+        List<PendingResponse> flushed = new ArrayList<>();
         while (true) {
             PendingResponse next = pending.remove(nextFlushSequence);
             if (next == null) {
-                return;
+                return new Result(flushed, blocked, pending.size());
             }
             nextFlushSequence++;
-            flusher.accept(next);
+            flushed.add(next);
         }
     }
 
@@ -32,5 +35,11 @@ public final class ClientResponseSequencer {
         return pending.size();
     }
 
-    public record PendingResponse(ByteBuf response, Throwable error, String command, io.micrometer.core.instrument.Timer.Sample sample, LargeKeyTracker.Context largeKeyContext, SlowQueryTracker.Context slowQueryContext, long startNanos, long backendNanos) {}
+    public record PendingResponse(ByteBuf response, Throwable error, String command, io.micrometer.core.instrument.Timer.Sample sample, LargeKeyTracker.Context largeKeyContext, SlowQueryTracker.Context slowQueryContext, long startNanos, long backendNanos, long completedNanos) {
+        public PendingResponse(ByteBuf response, Throwable error, String command, io.micrometer.core.instrument.Timer.Sample sample, LargeKeyTracker.Context largeKeyContext, SlowQueryTracker.Context slowQueryContext, long startNanos, long backendNanos) {
+            this(response, error, command, sample, largeKeyContext, slowQueryContext, startNanos, backendNanos, System.nanoTime());
+        }
+    }
+
+    public record Result(List<PendingResponse> flushed, boolean blocked, int pendingResponses) {}
 }
