@@ -1,0 +1,97 @@
+package com.zuomagai.redisproxy.dataplane.admin;
+
+import com.zuomagai.redisproxy.dataplane.analysis.HotKeyTracker;
+import com.zuomagai.redisproxy.dataplane.analysis.LargeKeyTracker;
+import com.zuomagai.redisproxy.dataplane.analysis.SlowQueryTracker;
+import com.zuomagai.redisproxy.dataplane.backend.BackendPool;
+import com.zuomagai.redisproxy.dataplane.config.ProxyProperties;
+import com.zuomagai.redisproxy.dataplane.netty.PipelineStats;
+import com.zuomagai.redisproxy.dataplane.router.RouteResolver;
+import java.util.List;
+import java.util.Map;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class AdminController {
+    private final ProxyProperties properties;
+    private final RouteResolver routeResolver;
+    private final BackendPool backendPool;
+    private final HotKeyTracker hotKeyTracker;
+    private final LargeKeyTracker largeKeyTracker;
+    private final SlowQueryTracker slowQueryTracker;
+    private final PipelineStats pipelineStats;
+
+    public AdminController(ProxyProperties properties, RouteResolver routeResolver, BackendPool backendPool, HotKeyTracker hotKeyTracker, LargeKeyTracker largeKeyTracker, SlowQueryTracker slowQueryTracker, PipelineStats pipelineStats) {
+        this.properties = properties;
+        this.routeResolver = routeResolver;
+        this.backendPool = backendPool;
+        this.hotKeyTracker = hotKeyTracker;
+        this.largeKeyTracker = largeKeyTracker;
+        this.slowQueryTracker = slowQueryTracker;
+        this.pipelineStats = pipelineStats;
+    }
+
+    @GetMapping("/healthz")
+    public String healthz() {
+        return "ok\n";
+    }
+
+    @GetMapping("/readyz")
+    public ResponseEntity<String> readyz() {
+        if (!ready()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body("not ready\n");
+        }
+        return ResponseEntity.ok("ready\n");
+    }
+
+    @GetMapping("/debug/config")
+    public ProxyProperties config() {
+        return properties;
+    }
+
+    @GetMapping("/debug/route-snapshot")
+    public RouteResolver.SnapshotInfo routeSnapshot() {
+        return routeResolver.snapshotInfo();
+    }
+
+    @GetMapping("/debug/hot-keys")
+    public List<HotKeyTracker.Entry> hotKeys(@RequestParam(name = "limit", defaultValue = "20") int limit) {
+        return hotKeyTracker.snapshot(limit);
+    }
+
+    @GetMapping("/debug/large-keys")
+    public List<LargeKeyTracker.Entry> largeKeys(@RequestParam(name = "limit", defaultValue = "100") int limit) {
+        return largeKeyTracker.snapshot(limit);
+    }
+
+    @GetMapping("/debug/slow-queries")
+    public List<SlowQueryTracker.Entry> slowQueries(@RequestParam(name = "limit", defaultValue = "100") int limit) {
+        return slowQueryTracker.snapshot(limit);
+    }
+
+    @GetMapping("/debug/pipeline")
+    public Map<String, Object> pipeline() {
+        return pipelineStats.snapshot();
+    }
+
+    private boolean ready() {
+        if (!"cluster".equals(properties.getMode())) {
+            return !routeResolver.defaultNodes().isEmpty() && backendPool.hasActive(routeResolver.defaultNodes().getFirst());
+        }
+        for (String clusterName : routeResolver.routeClusters()) {
+            if (routeResolver.clusterSlotCoverage(clusterName) != 16384) {
+                return false;
+            }
+            for (String owner : routeResolver.clusterSlotOwners(clusterName)) {
+                if (!backendPool.hasActive(owner)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+}
