@@ -49,7 +49,7 @@ Java 数据面是为了尾延迟对比而实现的实验版本，并不代表最
 
 最新对比报告：
 
-- [bench-results/comparison-go-java-async-20260518-155344.md](bench-results/comparison-go-java-async-20260518-155344.md)
+- [../bench-results/comparison-go-java-async-20260518-155344.md](../bench-results/comparison-go-java-async-20260518-155344.md)
 
 测试场景：
 
