@@ -123,6 +123,51 @@ class ProxyChannelHandlerTest {
         channel.finishAndReleaseAll();
     }
 
+    @Test
+    void returnsResponsesInRequestOrderWhenBackendCompletesOutOfOrder() {
+        ProxyProperties properties = properties(1024, 16, 0);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RouteResolver routeResolver = new RouteResolver(properties, registry);
+        BackendPool backendPool = mock(BackendPool.class);
+        CompletableFuture<ByteBuf> firstBackend = new CompletableFuture<>();
+        CompletableFuture<ByteBuf> secondBackend = new CompletableFuture<>();
+        when(backendPool.doRequest(anyString(), any(ByteBuf.class), anyInt())).thenReturn(firstBackend, secondBackend);
+        EmbeddedChannel channel = new EmbeddedChannel(new ProxyChannelHandler(
+                routeResolver,
+                backendPool,
+                mock(ClusterSlotRefresher.class),
+                new NamespaceLimiter(registry),
+                new KeyGovernanceLimiter(registry),
+                mock(HotKeyTracker.class),
+                mock(LargeKeyTracker.class),
+                mock(SlowQueryTracker.class),
+                new PipelineStats(registry),
+                registry,
+                new AtomicInteger(),
+                new AtomicInteger()));
+
+        channel.writeInbound(request("GET", "first"));
+        channel.writeInbound(request("GET", "second"));
+
+        secondBackend.complete(Unpooled.copiedBuffer("+SECOND\r\n", StandardCharsets.US_ASCII));
+        channel.runPendingTasks();
+        ByteBuf noneBeforeFirstCompletion = channel.readOutbound();
+        assertThat(noneBeforeFirstCompletion).isNull();
+
+        firstBackend.complete(Unpooled.copiedBuffer("+FIRST\r\n", StandardCharsets.US_ASCII));
+        channel.runPendingTasks();
+
+        ByteBuf first = channel.readOutbound();
+        ByteBuf second = channel.readOutbound();
+        assertThat(first.toString(StandardCharsets.US_ASCII)).isEqualTo("+FIRST\r\n");
+        assertThat(second.toString(StandardCharsets.US_ASCII)).isEqualTo("+SECOND\r\n");
+        first.release();
+        second.release();
+        ByteBuf noneAfterFlush = channel.readOutbound();
+        assertThat(noneAfterFlush).isNull();
+        channel.finishAndReleaseAll();
+    }
+
     private static ProxyProperties properties(int maxPipelineDepth, int flushBatchSize, int flushMaxDelayMillis) {
         ProxyProperties properties = new ProxyProperties();
         properties.getLimits().setMaxPipelineDepth(maxPipelineDepth);
