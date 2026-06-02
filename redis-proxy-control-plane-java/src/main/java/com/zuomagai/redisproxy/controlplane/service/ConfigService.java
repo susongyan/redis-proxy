@@ -227,8 +227,8 @@ public class ConfigService {
             if (hasNamespace && !namespaceNames.contains(rule.getNamespace())) {
                 throw new IllegalArgumentException("routing rule " + rule.getName() + " references unknown namespace");
             }
-            if (!hasNamespace && !hasKeyPrefix && !hasKeyPattern && !hasHashTag) {
-                throw new IllegalArgumentException("routing rule " + rule.getName() + " must set namespace, keyPrefix, keyPattern or hashTag");
+            if (!rule.isMatchAll() && !hasNamespace && !hasKeyPrefix && !hasKeyPattern && !hasHashTag) {
+                throw new IllegalArgumentException("routing rule " + rule.getName() + " must set matchAll, namespace, keyPrefix, keyPattern or hashTag");
             }
         }
         validateGovernance(config.getGovernance());
@@ -356,7 +356,7 @@ public class ConfigService {
 
     private static String summarizeRules(ProxyConfig config) {
         return config.getRouting().getRules().stream()
-                .map(rule -> rule.getName() + ":" + rule.getCluster() + ":" + rule.getNamespace() + ":" + rule.getKeyPrefix() + ":" + rule.getKeyPattern() + ":" + rule.getHashTag() + ":" + rule.getTrafficPercent())
+                .map(rule -> rule.getName() + ":" + rule.getCluster() + ":" + rule.isMatchAll() + ":" + rule.getNamespace() + ":" + rule.getKeyPrefix() + ":" + rule.getKeyPattern() + ":" + rule.getHashTag() + ":" + rule.getTrafficPercent())
                 .toList()
                 .toString();
     }
@@ -507,6 +507,7 @@ public class ConfigService {
             ProxyConfig.RouteRule copy = new ProxyConfig.RouteRule();
             copy.setName(rule.getName());
             copy.setCluster(rule.getCluster());
+            copy.setMatchAll(rule.isMatchAll());
             copy.setNamespace(rule.getNamespace());
             copy.setKeyPrefix(rule.getKeyPrefix());
             copy.setKeyPattern(rule.getKeyPattern());

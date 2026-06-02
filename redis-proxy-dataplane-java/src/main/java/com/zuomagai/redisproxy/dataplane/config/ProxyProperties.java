@@ -89,11 +89,12 @@ public class ProxyProperties {
             if (rule.namespace != null && !rule.namespace.isBlank() && !namespaceNames.containsKey(rule.namespace)) {
                 throw new IllegalArgumentException("routing rule " + rule.name + " references unknown namespace: " + rule.namespace);
             }
-            if ((rule.namespace == null || rule.namespace.isBlank())
+            if (!rule.matchAll
+                    && (rule.namespace == null || rule.namespace.isBlank())
                     && (rule.keyPrefix == null || rule.keyPrefix.isBlank())
                     && (rule.keyPattern == null || rule.keyPattern.isBlank())
                     && (rule.hashTag == null || rule.hashTag.isBlank())) {
-                throw new IllegalArgumentException("routing rule " + rule.name + " must set namespace, keyPrefix, keyPattern or hashTag");
+                throw new IllegalArgumentException("routing rule " + rule.name + " must set matchAll, namespace, keyPrefix, keyPattern or hashTag");
             }
         }
     }
@@ -200,6 +201,7 @@ public class ProxyProperties {
     public static class RouteRule {
         private String name;
         private String cluster;
+        private boolean matchAll;
         private String namespace;
         private String keyPrefix;
         private String keyPattern;
@@ -209,6 +211,8 @@ public class ProxyProperties {
         public void setName(String name) { this.name = name; }
         public String getCluster() { return cluster; }
         public void setCluster(String cluster) { this.cluster = cluster; }
+        public boolean isMatchAll() { return matchAll; }
+        public void setMatchAll(boolean matchAll) { this.matchAll = matchAll; }
         public String getNamespace() { return namespace; }
         public void setNamespace(String namespace) { this.namespace = namespace; }
         public String getKeyPrefix() { return keyPrefix; }

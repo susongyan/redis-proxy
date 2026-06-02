@@ -58,6 +58,7 @@ final class RouteConfigHash {
                     "hashTag", text(rule.getHashTag()),
                     "keyPattern", text(rule.getKeyPattern()),
                     "keyPrefix", text(rule.getKeyPrefix()),
+                    "matchAll", rule.isMatchAll(),
                     "name", text(rule.getName()),
                     "namespace", text(rule.getNamespace()),
                     "trafficPercent", rule.getTrafficPercent()));

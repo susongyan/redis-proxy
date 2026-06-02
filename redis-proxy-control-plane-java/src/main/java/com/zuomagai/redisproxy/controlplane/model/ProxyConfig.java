@@ -101,6 +101,7 @@ public class ProxyConfig {
     public static class RouteRule {
         @NotBlank private String name;
         @NotBlank private String cluster;
+        private boolean matchAll;
         private String namespace;
         private String keyPrefix;
         private String keyPattern;
@@ -110,6 +111,8 @@ public class ProxyConfig {
         public void setName(String name) { this.name = name; }
         public String getCluster() { return cluster; }
         public void setCluster(String cluster) { this.cluster = cluster; }
+        public boolean isMatchAll() { return matchAll; }
+        public void setMatchAll(boolean matchAll) { this.matchAll = matchAll; }
         public String getNamespace() { return namespace; }
         public void setNamespace(String namespace) { this.namespace = namespace; }
         public String getKeyPrefix() { return keyPrefix; }

@@ -165,6 +165,41 @@ func TestRouteRuleSelectsGrayClusterByPrefix(t *testing.T) {
 	}
 }
 
+func TestMatchAllRuleSelectsClusterAndAffectsHash(t *testing.T) {
+	cfg := &config.Config{
+		Mode: "standalone",
+		Backends: config.BackendConfig{Clusters: []config.ClusterConfig{
+			{Name: "redis-a", Nodes: []string{"127.0.0.1:6379"}},
+			{Name: "redis-b", Nodes: []string{"127.0.0.1:6380"}},
+		}},
+		Routing: config.RoutingConfig{
+			DefaultCluster: "redis-a",
+			Rules: []config.RouteRuleConfig{{
+				Name:           "cluster-switch-1",
+				Cluster:        "redis-b",
+				MatchAll:       true,
+				TrafficPercent: 100,
+			}},
+		},
+	}
+	baseHash := config.SnapshotHash(cfg)
+	rt, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := rt.Route(protocolRequest("GET", "order:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "127.0.0.1:6380" {
+		t.Fatalf("matchAll route addr=%q", addr)
+	}
+	cfg.Routing.Rules[0].MatchAll = false
+	if got := config.SnapshotHash(cfg); got == baseHash {
+		t.Fatal("matchAll change must affect snapshot hash")
+	}
+}
+
 func TestRouteRuleSelectsClusterByNamespacePatternAndHashTag(t *testing.T) {
 	rt, err := New(&config.Config{
 		Mode: "standalone",

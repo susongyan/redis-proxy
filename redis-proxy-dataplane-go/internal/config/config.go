@@ -61,6 +61,7 @@ type RoutingConfig struct {
 type RouteRuleConfig struct {
 	Name           string `yaml:"name" json:"name"`
 	Cluster        string `yaml:"cluster" json:"cluster"`
+	MatchAll       bool   `yaml:"matchAll" json:"matchAll"`
 	Namespace      string `yaml:"namespace" json:"namespace"`
 	KeyPrefix      string `yaml:"keyPrefix" json:"keyPrefix"`
 	KeyPattern     string `yaml:"keyPattern" json:"keyPattern"`
@@ -322,8 +323,8 @@ func (c *Config) Validate() error {
 		if rule.Namespace != "" && !namespaces[rule.Namespace] {
 			return fmt.Errorf("routing rule %q references unknown namespace %q", rule.Name, rule.Namespace)
 		}
-		if rule.Namespace == "" && rule.KeyPrefix == "" && rule.KeyPattern == "" && rule.HashTag == "" {
-			return fmt.Errorf("routing rule %q must set namespace, keyPrefix, keyPattern or hashTag", rule.Name)
+		if !rule.MatchAll && rule.Namespace == "" && rule.KeyPrefix == "" && rule.KeyPattern == "" && rule.HashTag == "" {
+			return fmt.Errorf("routing rule %q must set matchAll, namespace, keyPrefix, keyPattern or hashTag", rule.Name)
 		}
 	}
 	if err := c.validateGovernance(); err != nil {

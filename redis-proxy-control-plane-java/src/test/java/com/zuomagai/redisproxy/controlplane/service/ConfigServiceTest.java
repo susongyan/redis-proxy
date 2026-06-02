@@ -91,6 +91,27 @@ class ConfigServiceTest {
     }
 
     @Test
+    void acceptsMatchAllRouteRule() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        ProxyConfig.Cluster gray = new ProxyConfig.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:6380"));
+        config.getBackends().setClusters(List.of(config.getBackends().getClusters().getFirst(), gray));
+        ProxyConfig.RouteRule rule = new ProxyConfig.RouteRule();
+        rule.setName("cluster-switch-1");
+        rule.setCluster("redis-b");
+        rule.setMatchAll(true);
+        rule.setTrafficPercent(10);
+        config.getRouting().setRules(List.of(rule));
+
+        ProxyConfig updated = service.update(config);
+
+        assertThat(updated.getRouting().getRules().getFirst().isMatchAll()).isTrue();
+        assertThat(service.routeStatus().expectedConfigHash()).startsWith("sha256:");
+    }
+
+    @Test
     void acceptsNamespaceAndPatternRouteRuleAndRejectsUnknownNamespace() {
         ConfigService service = new ConfigService();
         ProxyConfig config = service.get();

@@ -44,6 +44,10 @@ routing:
       keyPrefix: "user:"
       keyPattern: "user:*:profile"
       trafficPercent: 10
+    - name: "cluster-switch-1001"
+      cluster: "redis-b"
+      matchAll: true
+      trafficPercent: 25
     - name: "order-hash-tag"
       cluster: "redis-b"
       hashTag: "order"
@@ -113,7 +117,8 @@ governance:
 - 启动强校验，非法配置 fail fast。
 - 数据面运行时使用本地不可变快照。
 - `routeEpoch` 表示当前路由快照版本；数据面按快照进行原子路由选择，不在单请求中混用多个版本。
-- `routing.rules` 按顺序匹配，支持 `namespace` / `keyPrefix` / `keyPattern` / `hashTag` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
+- `routing.rules` 按顺序匹配，支持 `namespace` / `keyPrefix` / `keyPattern` / `hashTag` / `matchAll` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
+- `matchAll=true` 用于整集群切换类规则，按首个 key 或 namespace 做稳定分流；`trafficPercent=100` 完成后应改写 `defaultCluster` 并移除临时规则。
 - `namespace` 来自连接上 `AUTH <namespace> <token>` 绑定的身份；未认证连接只能命中未设置 namespace 的路由规则。
 - `keyPattern` 使用受限 glob 语义，支持 `*` 和 `?`，不是 regex；请求热路径优先使用 `keyPrefix`。
 - 控制面生成同结构配置；开启 `controlPlane.enabled` 后，数据面通过 `/api/v1/config/watch` 长轮询消费新快照。

@@ -370,17 +370,19 @@ public class RouteResolver {
             if (rule.getTrafficPercent() <= 0) {
                 continue;
             }
-            if (rule.getNamespace() != null && !rule.getNamespace().isBlank() && !rule.getNamespace().equals(namespace)) {
-                continue;
-            }
-            if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && (rawKey == null || !rawKey.startsWithUtf8(rule.getKeyPrefix()))) {
-                continue;
-            }
-            if (rule.getKeyPattern() != null && !rule.getKeyPattern().isBlank() && (rawKey == null || !rawKey.matchesGlobUtf8(rule.getKeyPattern()))) {
-                continue;
-            }
-            if (rule.getHashTag() != null && !rule.getHashTag().isBlank() && (rawKey == null || !rawKey.hashTagEqualsUtf8(rule.getHashTag()))) {
-                continue;
+            if (!rule.isMatchAll()) {
+                if (rule.getNamespace() != null && !rule.getNamespace().isBlank() && !rule.getNamespace().equals(namespace)) {
+                    continue;
+                }
+                if (rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank() && (rawKey == null || !rawKey.startsWithUtf8(rule.getKeyPrefix()))) {
+                    continue;
+                }
+                if (rule.getKeyPattern() != null && !rule.getKeyPattern().isBlank() && (rawKey == null || !rawKey.matchesGlobUtf8(rule.getKeyPattern()))) {
+                    continue;
+                }
+                if (rule.getHashTag() != null && !rule.getHashTag().isBlank() && (rawKey == null || !rawKey.hashTagEqualsUtf8(rule.getHashTag()))) {
+                    continue;
+                }
             }
             int sample = rawKey == null ? stablePercent(namespace) : rawKey.slot() % 100;
             if (rule.getTrafficPercent() >= 100 || sample < rule.getTrafficPercent()) {

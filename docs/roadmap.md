@@ -70,6 +70,11 @@
 18. 控制面 `/api/v1/routes/status` 返回 `expectedVersionId`、`expectedRouteEpoch` 和 `expectedConfigHash`。
 19. 控制面 Collector 已拉取每台 proxy 的 `/debug/route-snapshot`，并通过 `GET /api/v1/routes/convergence` 提供多 proxy 配置收敛状态。
 20. 已固化 `scripts/e2e-route-convergence.sh`，覆盖 Go / Java 数据面 route snapshot hash 和控制面 `CONVERGED` 状态验证。
+21. Go / Java 数据面和控制面均支持 `routing.rules[].matchAll`，用于整集群百分比切流。
+22. 控制面新增 `ClusterSwitchPlan`，支持 staged 和 full 两种整集群切换模式，计划和发布版本均持久化。
+23. 控制面新增 `/api/v1/cluster-switch/plans` 系列 API，支持创建、查询、预检、启动、推进、跳转、回滚和取消。
+24. 整集群切换每一步都发布更大 `routeEpoch`，并依赖 `/api/v1/routes/convergence` 判断多 proxy 收敛后再推进。
+25. 已固化 `scripts/e2e-cluster-switch.sh`，覆盖 Go / Java staged/full 切换和 rollback 验证。
 
 多 Proxy 配置收敛观测：
 
@@ -83,10 +88,10 @@
 
 待完成：
 
-1. 将控制面版本历史和审计记录从内存态迁移到持久化存储。
-2. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
-3. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
-4. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
+1. 接入真实审批流，使 `approvalStatus` 从审计字段升级为发布阻断条件。
+2. 接入 Prometheus 查询或报表服务，在控制面聚合展示灰度真实命中量。
+3. 为动态路由删除的 backend node 增加 retired 标记、inflight drain 和超时关闭，避免长期残留旧连接池。
+4. 为整集群切换增加外部数据迁移校验回调，但不把数据复制逻辑放进 proxy 数据面。
 
 第三阶段：治理能力
 

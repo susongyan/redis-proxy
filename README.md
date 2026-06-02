@@ -45,6 +45,7 @@ flowchart LR
 - 双数据面：Go async backend 与 Java Netty async backend，能力口径保持对齐。
 - Redis Cluster 路由：支持 `CLUSTER SLOTS` 刷新、MOVED 单 slot 更新、ASKING 临时路由、degraded refresh 和真实 `/readyz`。
 - 动态路由：支持 `routeEpoch` 原子切换、长轮询发布、namespace / key pattern / hash tag 路由、百分比灰度和基于更大 epoch 的回滚。
+- 整集群切换：控制面支持一键全量切换和分阶段灰度切换，用于机器迁移、上下云和机房搬迁。
 - 多 proxy 收敛：通过 `routeEpoch + configHash + proxyId` 判断每台数据面是否应用同一配置。
 - 治理能力：支持 `AUTH <namespace> <token>`、命令治理、只读 namespace、allowed key prefix、namespace 限流、key 禁用和 key rule 滑动窗口限流。
 - 观测分析：支持热 key TopK、大 key、大 response、慢查询 TopN、控制面 Collector 和本地巡检报告。

@@ -77,6 +77,13 @@ REDIS_CLUSTER_PORTS="7100 7101 7102 7103 7104 7105" ./scripts/redis-cluster-down
 ./scripts/e2e-observability-collector.sh java
 ```
 
+执行整集群切换 E2E：
+
+```bash
+./scripts/e2e-cluster-switch.sh go staged
+./scripts/e2e-cluster-switch.sh java full
+```
+
 执行 benchmark：
 
 ```bash

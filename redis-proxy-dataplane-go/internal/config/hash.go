@@ -92,6 +92,7 @@ func rulesHash(rules []RouteRuleConfig) []any {
 			"hashTag":        rule.HashTag,
 			"keyPattern":     rule.KeyPattern,
 			"keyPrefix":      rule.KeyPrefix,
+			"matchAll":       rule.MatchAll,
 			"name":           rule.Name,
 			"namespace":      rule.Namespace,
 			"trafficPercent": rule.TrafficPercent,

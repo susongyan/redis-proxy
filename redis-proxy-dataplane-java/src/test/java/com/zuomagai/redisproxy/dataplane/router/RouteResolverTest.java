@@ -84,6 +84,28 @@ class RouteResolverTest {
     }
 
     @Test
+    void matchAllRuleSelectsClusterAndAffectsHash() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        ProxyProperties.Cluster gray = new ProxyProperties.Cluster();
+        gray.setName("redis-b");
+        gray.setNodes(List.of("127.0.0.1:6380"));
+        properties.getBackends().setClusters(List.of(properties.getBackends().getClusters().getFirst(), gray));
+        ProxyProperties.RouteRule rule = new ProxyProperties.RouteRule();
+        rule.setName("cluster-switch-1");
+        rule.setCluster("redis-b");
+        rule.setMatchAll(true);
+        rule.setTrafficPercent(100);
+        properties.getRouting().setRules(List.of(rule));
+        String baseHash = RouteConfigHash.hash(properties);
+
+        RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
+
+        assertThat(resolver.route(request("GET", "order:1"))).isEqualTo("127.0.0.1:6380");
+        rule.setMatchAll(false);
+        assertThat(RouteConfigHash.hash(properties)).isNotEqualTo(baseHash);
+    }
+
+    @Test
     void routeRuleSelectsClusterByNamespacePatternAndHashTag() {
         ProxyProperties properties = properties("127.0.0.1:6379");
         ProxyProperties.Cluster redisB = new ProxyProperties.Cluster();

@@ -578,17 +578,19 @@ func (r *Router) selectCluster(namespace string, req protocol.Request) (string, 
 		if rule.TrafficPercent <= 0 {
 			continue
 		}
-		if rule.Namespace != "" && rule.Namespace != namespace {
-			continue
-		}
-		if rule.KeyPrefix != "" && (!ok || !bytes.HasPrefix(rawKey, []byte(rule.KeyPrefix))) {
-			continue
-		}
-		if rule.KeyPattern != "" && (!ok || !matchGlob([]byte(rule.KeyPattern), rawKey)) {
-			continue
-		}
-		if rule.HashTag != "" && (!ok || string(tag) != rule.HashTag) {
-			continue
+		if !rule.MatchAll {
+			if rule.Namespace != "" && rule.Namespace != namespace {
+				continue
+			}
+			if rule.KeyPrefix != "" && (!ok || !bytes.HasPrefix(rawKey, []byte(rule.KeyPrefix))) {
+				continue
+			}
+			if rule.KeyPattern != "" && (!ok || !matchGlob([]byte(rule.KeyPattern), rawKey)) {
+				continue
+			}
+			if rule.HashTag != "" && (!ok || string(tag) != rule.HashTag) {
+				continue
+			}
 		}
 		sampleKey := rawKey
 		if len(sampleKey) == 0 {
