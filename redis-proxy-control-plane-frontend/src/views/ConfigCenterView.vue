@@ -6,6 +6,7 @@ import { api } from '../api/client';
 import type { Cluster, ConfigDiff, ConfigVersion, KeyRule, Namespace, ProxyConfig, RouteRule } from '../api/types';
 import StatusTag from '../components/StatusTag.vue';
 import { useControlPlaneStore } from '../stores/controlPlane';
+import { buildSideBySideYamlDiff, buildYamlDiff } from '../utils/configDiff';
 import { formatDateTime, maskTokens } from '../utils/status';
 import { toYaml } from '../utils/yaml';
 
@@ -33,6 +34,20 @@ const draft = ref<DraftConfig>(normalizeConfig());
 
 const yamlPreview = computed(() => toYaml(maskTokens(draft.value)));
 const currentMaskedJson = computed(() => JSON.stringify(maskTokens(store.config || {}), null, 2));
+const selectedFromVersion = computed(() => store.versions.find((version) => version.versionId === selectedVersion.value));
+const selectedToVersion = computed(() => store.versions.find((version) => version.versionId === diffTarget.value));
+const latestVersion = computed(() => store.versions.reduce<ConfigVersion | undefined>((latest, version) => (!latest || version.versionId > latest.versionId ? version : latest), undefined));
+const sortedVersions = computed(() => [...store.versions].sort((left, right) => right.versionId - left.versionId));
+const diffDialogVisible = ref(false);
+const diffViewMode = ref<'side-by-side' | 'unified'>('side-by-side');
+const visualDiff = computed(() => {
+  if (!selectedFromVersion.value || !selectedToVersion.value) return undefined;
+  return buildYamlDiff(selectedFromVersion.value.config, selectedToVersion.value.config);
+});
+const sideBySideDiff = computed(() => {
+  if (!selectedFromVersion.value || !selectedToVersion.value) return [];
+  return buildSideBySideYamlDiff(selectedFromVersion.value.config, selectedToVersion.value.config);
+});
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? {})) as T;
@@ -108,8 +123,32 @@ async function rollback(version: ConfigVersion) {
 }
 
 async function previewDiff() {
-  if (!selectedVersion.value || !diffTarget.value) return;
+  if (!selectedVersion.value || !diffTarget.value) {
+    ElMessage.warning('请选择基准版本和目标版本');
+    return;
+  }
+  if (selectedVersion.value === diffTarget.value) {
+    ElMessage.warning('基准版本和目标版本相同，无需对比');
+    return;
+  }
   diff.value = await api.config.diff(selectedVersion.value, diffTarget.value);
+  diffDialogVisible.value = true;
+}
+
+function useLatestAsTarget() {
+  if (!latestVersion.value) return;
+  diffTarget.value = latestVersion.value.versionId;
+}
+
+function versionOptionLabel(version: ConfigVersion, role: 'from' | 'to') {
+  const prefix = role === 'to' && latestVersion.value?.versionId === version.versionId ? '当前版本 ' : '';
+  return `${prefix}v${version.versionId} / epoch ${version.routeEpoch}`;
+}
+
+function versionRowClass({ row }: { row: ConfigVersion }) {
+  if (row.versionId === selectedVersion.value) return 'is-from-version';
+  if (row.versionId === diffTarget.value) return 'is-to-version';
+  return '';
 }
 
 function addCluster() {
@@ -360,39 +399,119 @@ onMounted(load);
       <el-tab-pane label="版本历史" name="versions">
         <section class="panel">
           <div class="panel-header">
-            <h2>版本历史</h2>
-            <div class="toolbar-right">
-              <el-select v-model="selectedVersion" placeholder="from" style="width: 120px">
-                <el-option v-for="v in store.versions" :key="v.versionId" :label="v.versionId" :value="v.versionId" />
-              </el-select>
-              <el-select v-model="diffTarget" placeholder="to" style="width: 120px">
-                <el-option v-for="v in store.versions" :key="v.versionId" :label="v.versionId" :value="v.versionId" />
-              </el-select>
-              <el-button @click="previewDiff">Diff</el-button>
+            <div>
+              <h2>版本历史</h2>
+              <span class="subtle">From 是基准/旧版本，To 是目标/更新后版本</span>
             </div>
           </div>
           <div class="panel-body">
-            <el-table :data="store.versions" size="small">
-              <el-table-column prop="versionId" label="version" width="90" />
-              <el-table-column prop="routeEpoch" label="epoch" width="90" />
-              <el-table-column prop="action" label="action" width="120" />
-              <el-table-column prop="operator" label="operator" width="130" />
-              <el-table-column prop="reason" label="reason" show-overflow-tooltip />
-              <el-table-column label="approval" width="120">
-                <template #default="{ row }"><StatusTag :label="row.approvalStatus" type="success" /></template>
+            <div class="version-compare-toolbar">
+              <el-select v-model="selectedVersion" placeholder="基准版本 From" style="width: 160px">
+                <el-option v-for="v in sortedVersions" :key="v.versionId" :label="versionOptionLabel(v, 'from')" :value="v.versionId" />
+              </el-select>
+              <el-select v-model="diffTarget" placeholder="目标版本 To" style="width: 190px">
+                <el-option v-for="v in sortedVersions" :key="v.versionId" :label="versionOptionLabel(v, 'to')" :value="v.versionId" />
+              </el-select>
+              <el-button @click="useLatestAsTarget">To = 当前版本</el-button>
+              <el-button type="primary" @click="previewDiff">生成对比</el-button>
+            </div>
+            <el-table :data="sortedVersions" size="small" class="version-table" :row-class-name="versionRowClass">
+              <el-table-column prop="versionId" label="version" width="82">
+                <template #default="{ row }">
+                  <strong>v{{ row.versionId }}</strong>
+                </template>
               </el-table-column>
-              <el-table-column label="publishedAt" width="190">
+              <el-table-column prop="routeEpoch" label="epoch" width="82" />
+              <el-table-column prop="action" label="action" width="108" />
+              <el-table-column prop="reason" label="reason" show-overflow-tooltip />
+              <el-table-column label="publishedAt" width="168">
                 <template #default="{ row }">{{ formatDateTime(row.publishedAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="120">
+              <el-table-column label="操作" width="92" fixed="right">
                 <template #default="{ row }"><el-button size="small" type="warning" @click="rollback(row)">回滚</el-button></template>
               </el-table-column>
             </el-table>
-            <el-alert v-if="diff" :title="`Diff ${diff.fromVersionId} -> ${diff.toVersionId}`" type="info" class="section" />
-            <ul v-if="diff"><li v-for="change in diff.changes" :key="change">{{ change }}</li></ul>
           </div>
         </section>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="diffDialogVisible" class="diff-dialog" width="88vw" top="5vh" append-to-body>
+      <template #header>
+        <div class="dialog-title">
+          <strong v-if="diff">配置 Diff v{{ diff.fromVersionId }} -> v{{ diff.toVersionId }}</strong>
+          <span>From 是基准/旧版本，To 是目标/更新后版本</span>
+        </div>
+      </template>
+      <section v-if="diff && visualDiff" class="diff-workbench diff-dialog-body">
+        <div class="diff-content">
+          <div class="diff-summary">
+            <div>
+              <h3>配置变更高亮</h3>
+              <p class="subtle">左右两侧展示完整配置；敏感 token/password 已掩码。</p>
+            </div>
+            <div class="diff-stats">
+              <span class="diff-stat add">+{{ visualDiff.stats.added }}</span>
+              <span class="diff-stat remove">-{{ visualDiff.stats.removed }}</span>
+              <span class="diff-stat same">{{ visualDiff.stats.unchanged }} unchanged</span>
+            </div>
+          </div>
+
+          <div class="diff-meta-grid">
+            <div class="diff-meta-card">
+              <span>From 基准/旧版本</span>
+              <strong>v{{ selectedFromVersion?.versionId }} / epoch {{ selectedFromVersion?.routeEpoch }}</strong>
+              <em>{{ selectedFromVersion?.operator }} · {{ selectedFromVersion?.reason }}</em>
+            </div>
+            <div class="diff-meta-card">
+              <span>To 目标/更新后版本</span>
+              <strong>v{{ selectedToVersion?.versionId }} / epoch {{ selectedToVersion?.routeEpoch }}</strong>
+              <em>{{ selectedToVersion?.operator }} · {{ selectedToVersion?.reason }}</em>
+            </div>
+          </div>
+
+          <div v-if="diff.changes.length" class="diff-change-list">
+            <span v-for="change in diff.changes" :key="change">{{ change }}</span>
+          </div>
+
+          <div class="diff-mode-bar">
+            <el-segmented v-model="diffViewMode" :options="[{ label: '左右对比', value: 'side-by-side' }, { label: '统一 Diff', value: 'unified' }]" />
+          </div>
+
+          <div v-if="diffViewMode === 'side-by-side'" class="side-by-side-diff">
+            <div class="side-diff-header">
+              <div>From v{{ selectedFromVersion?.versionId }}</div>
+              <div>To v{{ selectedToVersion?.versionId }}</div>
+            </div>
+            <div class="side-diff-body">
+              <div v-for="(row, index) in sideBySideDiff" :key="`side-${index}`" class="side-diff-row" :class="`is-${row.kind}`">
+                <div class="side-diff-cell left">
+                  <span class="diff-line-no">{{ row.left.line || '' }}</span>
+                  <code>{{ row.left.text || ' ' }}</code>
+                </div>
+                <div class="side-diff-cell right">
+                  <span class="diff-line-no">{{ row.right.line || '' }}</span>
+                  <code>{{ row.right.text || ' ' }}</code>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="diff-viewer">
+            <div
+              v-for="(line, index) in visualDiff.lines"
+              :key="`${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`"
+              class="diff-line"
+              :class="`is-${line.kind}`"
+            >
+              <span class="diff-line-no">{{ line.oldLine || '' }}</span>
+              <span class="diff-line-no">{{ line.newLine || '' }}</span>
+              <span class="diff-marker">{{ line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' ' }}</span>
+              <code>{{ line.text || ' ' }}</code>
+            </div>
+          </div>
+        </div>
+      </section>
+    </el-dialog>
   </div>
 </template>
