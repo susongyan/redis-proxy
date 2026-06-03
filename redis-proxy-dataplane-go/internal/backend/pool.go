@@ -3,6 +3,7 @@ package backend
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"math/rand"
 	"net"
 	"sync"
@@ -41,6 +42,7 @@ type request struct {
 
 type Client struct {
 	addr             string
+	auth             config.AuthConfig
 	conn             net.Conn
 	br               *bufio.Reader
 	requests         chan request
@@ -60,6 +62,7 @@ type Client struct {
 type Pools struct {
 	mu               sync.RWMutex
 	conns            map[string][]*Client
+	authByNode       map[string]config.AuthConfig
 	nodeReconnectSem map[string]chan struct{}
 	reg              *metrics.Registry
 	log              *zap.Logger
@@ -74,6 +77,7 @@ type Pools struct {
 func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pools, error) {
 	p := &Pools{
 		conns:            map[string][]*Client{},
+		authByNode:       map[string]config.AuthConfig{},
 		nodeReconnectSem: map[string]chan struct{}{},
 		reg:              reg,
 		log:              log,
@@ -95,6 +99,7 @@ func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pool
 			p.defaultInflight = maxInflight
 		}
 		for _, node := range cluster.Nodes {
+			p.authByNode[node] = cluster.Auth
 			if err := p.Ensure(node); err != nil {
 				p.Close()
 				return nil, err
@@ -107,6 +112,13 @@ func NewPools(cfg *config.Config, reg *metrics.Registry, log *zap.Logger) (*Pool
 
 func (p *Pools) Ensure(addr string) error {
 	p.mu.RLock()
+	auth := p.authByNode[addr]
+	p.mu.RUnlock()
+	return p.EnsureWithAuth(addr, auth)
+}
+
+func (p *Pools) EnsureWithAuth(addr string, auth config.AuthConfig) error {
+	p.mu.RLock()
 	_, ok := p.conns[addr]
 	p.mu.RUnlock()
 	if ok {
@@ -117,6 +129,7 @@ func (p *Pools) Ensure(addr string) error {
 	if _, ok := p.conns[addr]; ok {
 		return nil
 	}
+	p.authByNode[addr] = auth
 	size := p.defaultSize
 	if size <= 0 {
 		size = 8
@@ -127,7 +140,7 @@ func (p *Pools) Ensure(addr string) error {
 	}
 	clients := make([]*Client, 0, size)
 	for i := 0; i < size; i++ {
-		client, err := newClient(addr, maxInflight, p.maxResponseBytes, p.reg, p.log)
+		client, err := newClient(addr, auth, maxInflight, p.maxResponseBytes, p.reg, p.log)
 		if err != nil {
 			for _, c := range clients {
 				c.close()
@@ -139,6 +152,15 @@ func (p *Pools) Ensure(addr string) error {
 	p.conns[addr] = clients
 	p.nodeReconnectSem[addr] = make(chan struct{}, nodeReconnectLimit)
 	p.reg.BackendDesired.WithLabelValues(addr).Set(float64(size))
+	return nil
+}
+
+func (p *Pools) EnsureCluster(cluster config.ClusterConfig) error {
+	for _, node := range cluster.Nodes {
+		if err := p.EnsureWithAuth(node, cluster.Auth); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -298,7 +320,10 @@ func (p *Pools) reconnectCandidate(candidate reconnectCandidate) {
 		p.reg.BackendReconnecting.WithLabelValues(candidate.addr).Dec()
 		candidate.old.reconnecting.Store(false)
 	}()
-	replacement, err := newClient(candidate.addr, p.defaultInflight, p.maxResponseBytes, p.reg, p.log)
+	p.mu.RLock()
+	auth := p.authByNode[candidate.addr]
+	p.mu.RUnlock()
+	replacement, err := newClient(candidate.addr, auth, p.defaultInflight, p.maxResponseBytes, p.reg, p.log)
 	if err != nil {
 		p.reg.BackendReconnects.WithLabelValues(candidate.addr, "error").Inc()
 		candidate.old.scheduleNextReconnect()
@@ -375,13 +400,18 @@ func (p *Pools) releaseReconnect(addr string) {
 	}
 }
 
-func newClient(addr string, maxInflight int, maxResponseBytes int, reg *metrics.Registry, log *zap.Logger) (*Client, error) {
+func newClient(addr string, auth config.AuthConfig, maxInflight int, maxResponseBytes int, reg *metrics.Registry, log *zap.Logger) (*Client, error) {
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
+	if err := authenticate(conn, auth, maxResponseBytes); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	client := &Client{
 		addr:             addr,
+		auth:             auth,
 		conn:             conn,
 		br:               bufio.NewReader(conn),
 		requests:         make(chan request, maxInflight),
@@ -398,6 +428,34 @@ func newClient(addr string, maxInflight int, maxResponseBytes int, reg *metrics.
 	go client.writeLoop()
 	go client.readLoop()
 	return client, nil
+}
+
+func authenticate(conn net.Conn, auth config.AuthConfig, maxResponseBytes int) error {
+	if !auth.Enabled {
+		return nil
+	}
+	if auth.Password == "" {
+		return errors.New("backend auth password is required")
+	}
+	payload := authPayload(auth)
+	if _, err := conn.Write(payload); err != nil {
+		return err
+	}
+	resp, err := protocol.ReadFrameRaw(bufio.NewReader(conn), max(1, maxResponseBytes))
+	if err != nil {
+		return err
+	}
+	if len(resp) < 3 || resp[0] != '+' {
+		return fmt.Errorf("backend auth failed: %q", string(resp))
+	}
+	return nil
+}
+
+func authPayload(auth config.AuthConfig) []byte {
+	if auth.Username == "" {
+		return []byte(fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(auth.Password), auth.Password))
+	}
+	return []byte(fmt.Sprintf("*3\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(auth.Username), auth.Username, len(auth.Password), auth.Password))
 }
 
 func (c *Client) isActive() bool {

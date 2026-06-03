@@ -68,6 +68,9 @@ public class ProxyProperties {
             if (!clusterNames.add(cluster.name)) {
                 throw new IllegalArgumentException("duplicate cluster: " + cluster.name);
             }
+            if (cluster.auth.isEnabled() && (cluster.auth.getPassword() == null || cluster.auth.getPassword().isBlank())) {
+                throw new IllegalArgumentException("cluster " + cluster.name + " auth.password is required when auth.enabled=true");
+            }
         }
         if (!clusterNames.contains(routing.defaultCluster)) {
             throw new IllegalArgumentException("default cluster not found: " + routing.defaultCluster);
@@ -162,13 +165,28 @@ public class ProxyProperties {
     public static class Cluster {
         private String name;
         private List<String> nodes = new ArrayList<>();
+        private Auth auth = new Auth();
         private Pool pool = new Pool();
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
         public List<String> getNodes() { return nodes; }
         public void setNodes(List<String> nodes) { this.nodes = nodes; }
+        public Auth getAuth() { return auth; }
+        public void setAuth(Auth auth) { this.auth = auth == null ? new Auth() : auth; }
         public Pool getPool() { return pool; }
         public void setPool(Pool pool) { this.pool = pool; }
+    }
+
+    public static class Auth {
+        private boolean enabled;
+        private String username = "";
+        private String password = "";
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getUsername() { return username; }
+        public void setUsername(String username) { this.username = username == null ? "" : username; }
+        public String getPassword() { return password; }
+        public void setPassword(String password) { this.password = password == null ? "" : password; }
     }
 
     public static class Pool {

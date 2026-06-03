@@ -16,6 +16,10 @@ backends:
         - "127.0.0.1:7103"
         - "127.0.0.1:7104"
         - "127.0.0.1:7105"
+      auth:
+        enabled: false
+        username: ""
+        password: ""
       pool:
         connectionsPerNode: 16
         maxInflightPerConnection: 4096

@@ -20,6 +20,10 @@ backends:
         - "127.0.0.1:7000"
         - "127.0.0.1:7001"
         - "127.0.0.1:7002"
+      auth:
+        enabled: false
+        username: ""
+        password: ""
       pool:
         connectionsPerNode: 16
         maxInflightPerConnection: 4096
@@ -28,6 +32,10 @@ backends:
         - "127.0.0.1:7100"
         - "127.0.0.1:7101"
         - "127.0.0.1:7102"
+      auth:
+        enabled: false
+        username: ""
+        password: ""
       pool:
         connectionsPerNode: 16
         maxInflightPerConnection: 4096
@@ -118,6 +126,8 @@ governance:
 - 数据面运行时使用本地不可变快照。
 - `routeEpoch` 表示当前路由快照版本；数据面按快照进行原子路由选择，不在单请求中混用多个版本。
 - `routing.rules` 按顺序匹配，支持 `namespace` / `keyPrefix` / `keyPattern` / `hashTag` / `matchAll` 和稳定百分比灰度，未命中时回到 `defaultCluster`。
+- `backends.clusters[].auth` 用于 proxy 到 Redis backend 的认证；`username` 为空时发送 `AUTH <password>`，非空时发送 Redis ACL 形式 `AUTH <username> <password>`。
+- `auth.enabled=true` 时 `password` 必填；控制面前端和 YAML 预览必须掩码展示 password。
 - `matchAll=true` 用于整集群切换类规则，按首个 key 或 namespace 做稳定分流；`trafficPercent=100` 完成后应改写 `defaultCluster` 并移除临时规则。
 - `namespace` 来自连接上 `AUTH <namespace> <token>` 绑定的身份；未认证连接只能命中未设置 namespace 的路由规则。
 - `keyPattern` 使用受限 glob 语义，支持 `*` 和 `?`，不是 regex；请求热路径优先使用 `keyPrefix`。

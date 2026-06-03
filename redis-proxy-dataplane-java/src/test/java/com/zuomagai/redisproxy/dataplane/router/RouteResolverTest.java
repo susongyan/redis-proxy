@@ -1,6 +1,7 @@
 package com.zuomagai.redisproxy.dataplane.router;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -106,6 +107,22 @@ class RouteResolverTest {
     }
 
     @Test
+    void backendAuthAffectsHashAndRequiresPassword() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        String baseHash = RouteConfigHash.hash(properties);
+
+        properties.getBackends().getClusters().getFirst().getAuth().setEnabled(true);
+        assertThatThrownBy(properties::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("auth.password");
+
+        properties.getBackends().getClusters().getFirst().getAuth().setUsername("default");
+        properties.getBackends().getClusters().getFirst().getAuth().setPassword("secret");
+        properties.validate();
+        assertThat(RouteConfigHash.hash(properties)).isNotEqualTo(baseHash);
+    }
+
+    @Test
     void routeRuleSelectsClusterByNamespacePatternAndHashTag() {
         ProxyProperties properties = properties("127.0.0.1:6379");
         ProxyProperties.Cluster redisB = new ProxyProperties.Cluster();
@@ -174,7 +191,7 @@ class RouteResolverTest {
         assertThat(resolver.snapshotInfo().proxyId()).isEqualTo("proxy-java-1");
         assertThat(resolver.snapshotInfo().configHash()).startsWith("sha256:");
         assertThat(resolver.snapshotInfo().lastApplyResult()).isEqualTo("success");
-        verify(backendPool).ensureAll(List.of("127.0.0.1:6380"));
+        verify(backendPool).ensureCluster(next.getBackends().getClusters().get(1));
     }
 
     @Test

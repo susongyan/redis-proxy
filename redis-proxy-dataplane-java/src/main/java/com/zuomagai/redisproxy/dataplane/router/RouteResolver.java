@@ -129,7 +129,7 @@ public class RouteResolver {
         slotNodes.put(target.clusterName(), next);
         slotCoverage.set(slotCoverage());
         if (backendPool != null) {
-            backendPool.ensure(target.address());
+            backendPool.ensure(target.address(), snapshot.get().clusters().get(target.clusterName()).getAuth());
         }
     }
 
@@ -140,7 +140,7 @@ public class RouteResolver {
         }
         String address = normalizeAddr(snapshot.get(), clusterName, redirection.address());
         if (backendPool != null) {
-            backendPool.ensure(address);
+            backendPool.ensure(address, snapshot.get().clusters().get(clusterName).getAuth());
         }
         return address;
     }
@@ -278,7 +278,7 @@ public class RouteResolver {
             return new ApplyResult("stale_epoch", false, "routeEpoch must be greater than current");
         }
         for (ProxyProperties.Cluster cluster : next.getBackends().getClusters()) {
-            backendPool.ensureAll(cluster.getNodes());
+            backendPool.ensureCluster(cluster);
             slotNodes.computeIfAbsent(cluster.getName(), ignored -> new String[SLOTS]);
         }
         snapshot.set(new Snapshot(next, clusters(next)));

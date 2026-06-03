@@ -70,6 +70,10 @@ final class RouteConfigHash {
         List<Object> out = new ArrayList<>();
         for (ProxyProperties.Cluster cluster : list(clusters)) {
             out.add(map(
+                    "auth", map(
+                            "enabled", cluster.getAuth().isEnabled(),
+                            "password", text(cluster.getAuth().getPassword()),
+                            "username", text(cluster.getAuth().getUsername())),
                     "name", text(cluster.getName()),
                     "nodes", strings(cluster.getNodes()),
                     "pool", map(

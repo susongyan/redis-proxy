@@ -73,6 +73,11 @@ func clustersHash(clusters []ClusterConfig) []any {
 	out := make([]any, 0, len(clusters))
 	for _, cluster := range clusters {
 		out = append(out, map[string]any{
+			"auth": map[string]any{
+				"enabled":  cluster.Auth.Enabled,
+				"password": cluster.Auth.Password,
+				"username": cluster.Auth.Username,
+			},
 			"name":  cluster.Name,
 			"nodes": nonNilStrings(cluster.Nodes),
 			"pool": map[string]any{

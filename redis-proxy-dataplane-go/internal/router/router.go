@@ -209,11 +209,9 @@ func (m *Manager) ApplyConfig(cfg *config.Config, pools *backend.Pools) (string,
 		return "stale_epoch", fmt.Errorf("routeEpoch %d must be greater than current %d", cfg.Routing.RouteEpoch, old.epoch)
 	}
 	for _, cluster := range cfg.Backends.Clusters {
-		for _, node := range cluster.Nodes {
-			if err := pools.Ensure(node); err != nil {
-				m.RecordApplyResult("backend_ensure")
-				return "backend_ensure", err
-			}
+		if err := pools.EnsureCluster(cluster); err != nil {
+			m.RecordApplyResult("backend_ensure")
+			return "backend_ensure", err
 		}
 	}
 	next, err := New(cfg)
@@ -319,7 +317,7 @@ func (r *Router) UpdateMoved(response []byte, pools *backend.Pools) {
 	clusterName, addr := r.normalizeMovedAddr(target.Addr)
 	r.setSlot(clusterName, target.Slot, addr)
 	if pools != nil {
-		_ = pools.Ensure(addr)
+		_ = pools.EnsureWithAuth(addr, r.clusters[clusterName].Auth)
 	}
 }
 
@@ -333,7 +331,7 @@ func (r *Router) AskTarget(response []byte, clusterName string, pools *backend.P
 	}
 	addr := r.normalizeAddr(clusterName, target.Addr)
 	if pools != nil {
-		if err := pools.Ensure(addr); err != nil {
+		if err := pools.EnsureWithAuth(addr, r.clusters[clusterName].Auth); err != nil {
 			return "", err
 		}
 	}

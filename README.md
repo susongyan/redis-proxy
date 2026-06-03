@@ -4,11 +4,12 @@ Redis Proxy 是一个面向基础架构场景的 Redis 访问入口项目。目�
 
 ## 项目结构
 
-当前工作区保留三个独立工程：
+当前工作区保留四个独立工程：
 
 - `redis-proxy-dataplane-go`：Go 数据面，作为低尾延迟和低资源开销的主验证方向。
 - `redis-proxy-dataplane-java`：Java 21 + Netty 数据面，用于同等能力下对比尾延迟、GC、内存和吞吐。
 - `redis-proxy-control-plane-java`：Java 21 + Spring Boot 控制面，负责配置模型、路由策略、治理规则、发布治理和观测聚合。
+- `redis-proxy-control-plane-frontend`：Vue 3 控制面前端，负责配置发布、切换编排、收敛观测和治理分析页面。
 
 ## 核心目标
 

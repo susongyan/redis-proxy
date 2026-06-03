@@ -192,6 +192,12 @@ public class ConfigService {
         if (!List.of("standalone", "cluster").contains(config.getMode())) {
             throw new IllegalArgumentException("mode must be standalone or cluster");
         }
+        for (ProxyConfig.Cluster cluster : config.getBackends().getClusters()) {
+            if (cluster.getAuth().isEnabled()
+                    && (cluster.getAuth().getPassword() == null || cluster.getAuth().getPassword().isBlank())) {
+                throw new IllegalArgumentException("backend cluster " + cluster.getName() + " auth.password is required when auth.enabled=true");
+            }
+        }
         if (config.getRouting().getRouteEpoch() < 0) {
             throw new IllegalArgumentException("routing.routeEpoch must be >= 0");
         }
@@ -363,7 +369,11 @@ public class ConfigService {
 
     private static String summarizeClusters(ProxyConfig config) {
         return config.getBackends().getClusters().stream()
-                .map(cluster -> cluster.getName() + "=" + cluster.getNodes())
+                .map(cluster -> cluster.getName()
+                        + "=" + cluster.getNodes()
+                        + ":auth=" + cluster.getAuth().isEnabled()
+                        + ":" + cluster.getAuth().getUsername()
+                        + ":" + cluster.getAuth().getPassword())
                 .toList()
                 .toString();
     }
@@ -497,6 +507,11 @@ public class ConfigService {
         ProxyConfig.Cluster copy = new ProxyConfig.Cluster();
         copy.setName(source.getName());
         copy.setNodes(List.copyOf(source.getNodes()));
+        ProxyConfig.Auth auth = new ProxyConfig.Auth();
+        auth.setEnabled(source.getAuth().isEnabled());
+        auth.setUsername(source.getAuth().getUsername());
+        auth.setPassword(source.getAuth().getPassword());
+        copy.setAuth(auth);
         copy.getPool().setConnectionsPerNode(source.getPool().getConnectionsPerNode());
         copy.getPool().setMaxInflightPerConnection(source.getPool().getMaxInflightPerConnection());
         return copy;

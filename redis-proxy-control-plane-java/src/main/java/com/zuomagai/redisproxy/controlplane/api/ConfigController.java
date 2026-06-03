@@ -85,7 +85,7 @@ public class ConfigController {
     }
 
     @GetMapping("/api/v1/config/versions/{versionId}")
-    public ConfigVersion version(@PathVariable long versionId) {
+    public ConfigVersion version(@PathVariable("versionId") long versionId) {
         return configService.version(versionId);
     }
 

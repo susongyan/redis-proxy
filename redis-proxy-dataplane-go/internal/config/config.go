@@ -42,7 +42,14 @@ type BackendConfig struct {
 type ClusterConfig struct {
 	Name  string     `yaml:"name" json:"name"`
 	Nodes []string   `yaml:"nodes" json:"nodes"`
+	Auth  AuthConfig `yaml:"auth" json:"auth"`
 	Pool  PoolConfig `yaml:"pool" json:"pool"`
+}
+
+type AuthConfig struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
 }
 
 type PoolConfig struct {
@@ -301,6 +308,9 @@ func (c *Config) Validate() error {
 		seen[cluster.Name] = true
 		if len(cluster.Nodes) == 0 {
 			return fmt.Errorf("cluster %q must have at least one node", cluster.Name)
+		}
+		if cluster.Auth.Enabled && cluster.Auth.Password == "" {
+			return fmt.Errorf("cluster %q auth.password is required when auth.enabled=true", cluster.Name)
 		}
 	}
 	if !seen[c.Routing.DefaultCluster] {

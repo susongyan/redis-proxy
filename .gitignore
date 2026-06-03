@@ -13,6 +13,8 @@ data/
 **/target/
 **/build/
 **/out/
+**/dist/
+**/node_modules/
 
 redis-proxy-dataplane-go/redis-proxy-dataplane-go
 redis-proxy-dataplane-go/proxy

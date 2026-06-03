@@ -213,6 +213,26 @@ func TestSnapshotHashChangesForGovernanceLimitsAndAnalysis(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBackendAuthWithoutPassword(t *testing.T) {
+	cfg := validConfig()
+	cfg.Backends.Clusters[0].Auth.Enabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected backend auth password validation error")
+	}
+}
+
+func TestSnapshotHashChangesForBackendAuth(t *testing.T) {
+	cfg := validConfig()
+	ApplyDefaults(&cfg)
+	base := SnapshotHash(&cfg)
+	cfg.Backends.Clusters[0].Auth.Enabled = true
+	cfg.Backends.Clusters[0].Auth.Username = "default"
+	cfg.Backends.Clusters[0].Auth.Password = "secret"
+	if got := SnapshotHash(&cfg); got == base {
+		t.Fatal("backend auth change did not change snapshot hash")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: ServerConfig{Listen: "127.0.0.1:6379"},

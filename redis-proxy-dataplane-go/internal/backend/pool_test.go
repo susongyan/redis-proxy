@@ -46,6 +46,15 @@ func TestSelectClientByAffinityFallsBackToNextActive(t *testing.T) {
 	}
 }
 
+func TestAuthPayloadSupportsPasswordAndAcl(t *testing.T) {
+	if got := string(authPayload(config.AuthConfig{Enabled: true, Password: "secret"})); got != "*2\r\n$4\r\nAUTH\r\n$6\r\nsecret\r\n" {
+		t.Fatalf("password auth payload=%q", got)
+	}
+	if got := string(authPayload(config.AuthConfig{Enabled: true, Username: "default", Password: "secret"})); got != "*3\r\n$4\r\nAUTH\r\n$7\r\ndefault\r\n$6\r\nsecret\r\n" {
+		t.Fatalf("acl auth payload=%q", got)
+	}
+}
+
 func TestReconnectInactiveOnceReplacesSameSlot(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

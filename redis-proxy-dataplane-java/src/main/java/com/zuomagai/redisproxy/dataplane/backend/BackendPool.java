@@ -19,6 +19,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import jakarta.annotation.PreDestroy;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,6 +52,7 @@ public class BackendPool implements AutoCloseable {
         return thread;
     });
     private final Map<String, List<BackendConnection>> pools = new ConcurrentHashMap<>();
+    private final Map<String, ProxyProperties.Auth> authByNode = new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> nodeActiveConnections = new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> nodeReconnecting = new ConcurrentHashMap<>();
     private final Map<String, Semaphore> nodeReconnectLimits = new ConcurrentHashMap<>();
@@ -69,6 +71,7 @@ public class BackendPool implements AutoCloseable {
         for (ProxyProperties.Cluster cluster : properties.getBackends().getClusters()) {
             int size = Math.max(1, cluster.getPool().getConnectionsPerNode());
             for (String node : cluster.getNodes()) {
+                authByNode.put(node, cluster.getAuth());
                 registerNodeMetrics(node, size);
                 pools.computeIfAbsent(node, ignored -> connectPool(node, size));
             }
@@ -107,6 +110,11 @@ public class BackendPool implements AutoCloseable {
     }
 
     public void ensure(String address) {
+        ensure(address, authByNode.getOrDefault(address, new ProxyProperties.Auth()));
+    }
+
+    public void ensure(String address, ProxyProperties.Auth auth) {
+        authByNode.put(address, auth == null ? new ProxyProperties.Auth() : auth);
         registerNodeMetrics(address, 1);
         pools.computeIfAbsent(address, ignored -> connectPool(address, 1));
     }
@@ -114,6 +122,12 @@ public class BackendPool implements AutoCloseable {
     public void ensureAll(List<String> addresses) {
         for (String address : addresses) {
             ensure(address);
+        }
+    }
+
+    public void ensureCluster(ProxyProperties.Cluster cluster) {
+        for (String address : cluster.getNodes()) {
+            ensure(address, cluster.getAuth());
         }
     }
 
@@ -162,7 +176,45 @@ public class BackendPool implements AutoCloseable {
         connection.bind(channel);
         activeConnections.incrementAndGet();
         nodeActiveConnections(address).incrementAndGet();
+        authenticate(address, connection);
         return connection;
+    }
+
+    private void authenticate(String address, BackendConnection connection) {
+        ProxyProperties.Auth auth = authByNode.get(address);
+        if (auth == null || !auth.isEnabled()) {
+            return;
+        }
+        if (auth.getPassword() == null || auth.getPassword().isBlank()) {
+            connection.close();
+            throw new IllegalStateException("backend auth password is required: " + address);
+        }
+        ByteBuf request = Unpooled.copiedBuffer(authPayload(auth), StandardCharsets.US_ASCII);
+        ByteBuf response = null;
+        try {
+            response = connection.send(request, 0).get(2, TimeUnit.SECONDS);
+            if (response.readableBytes() < 3 || response.getByte(response.readerIndex()) != '+') {
+                throw new IllegalStateException("backend auth failed: " + address);
+            }
+        } catch (Exception e) {
+            connection.close();
+            throw new IllegalStateException("backend auth failed: " + address, e);
+        } finally {
+            request.release();
+            if (response != null) {
+                response.release();
+            }
+        }
+    }
+
+    private static String authPayload(ProxyProperties.Auth auth) {
+        byte[] password = auth.getPassword().getBytes(StandardCharsets.UTF_8);
+        if (auth.getUsername() == null || auth.getUsername().isBlank()) {
+            return "*2\r\n$4\r\nAUTH\r\n$" + password.length + "\r\n" + auth.getPassword() + "\r\n";
+        }
+        byte[] username = auth.getUsername().getBytes(StandardCharsets.UTF_8);
+        return "*3\r\n$4\r\nAUTH\r\n$" + username.length + "\r\n" + auth.getUsername()
+                + "\r\n$" + password.length + "\r\n" + auth.getPassword() + "\r\n";
     }
 
     private void registerNodeMetrics(String address, int desiredConnections) {

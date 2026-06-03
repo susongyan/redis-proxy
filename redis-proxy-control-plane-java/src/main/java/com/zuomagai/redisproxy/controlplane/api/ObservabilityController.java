@@ -41,7 +41,7 @@ public class ObservabilityController {
 
     @DeleteMapping("/api/v1/observability/targets/{proxyId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deleteTarget(@PathVariable String proxyId) {
+    public void deleteTarget(@PathVariable("proxyId") String proxyId) {
         observabilityService.delete(proxyId);
     }
 

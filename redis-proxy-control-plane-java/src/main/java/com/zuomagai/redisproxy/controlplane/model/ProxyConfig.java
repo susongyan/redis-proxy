@@ -62,13 +62,28 @@ public class ProxyConfig {
     public static class Cluster {
         @NotBlank private String name;
         @NotEmpty private List<String> nodes = new ArrayList<>();
+        @Valid private Auth auth = new Auth();
         @Valid private Pool pool = new Pool();
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
         public List<String> getNodes() { return nodes; }
         public void setNodes(List<String> nodes) { this.nodes = nodes; }
+        public Auth getAuth() { return auth; }
+        public void setAuth(Auth auth) { this.auth = auth == null ? new Auth() : auth; }
         public Pool getPool() { return pool; }
         public void setPool(Pool pool) { this.pool = pool; }
+    }
+
+    public static class Auth {
+        private boolean enabled;
+        private String username = "";
+        private String password = "";
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getUsername() { return username; }
+        public void setUsername(String username) { this.username = username == null ? "" : username; }
+        public String getPassword() { return password; }
+        public void setPassword(String password) { this.password = password == null ? "" : password; }
     }
 
     public static class Pool {

@@ -73,6 +73,17 @@ class ConfigServiceTest {
     }
 
     @Test
+    void rejectsBackendAuthWithoutPassword() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        config.getBackends().getClusters().getFirst().getAuth().setEnabled(true);
+
+        assertThatThrownBy(() -> service.update(config))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("auth.password");
+    }
+
+    @Test
     void acceptsValidRouteRule() {
         ConfigService service = new ConfigService();
         ProxyConfig config = service.get();
