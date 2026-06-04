@@ -46,6 +46,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class ObservabilityService {
     private static final int DEFAULT_POLL_INTERVAL_SECONDS = 15;
+    private static final int DEFAULT_HEARTBEAT_TTL_SECONDS = 45;
     private static final int MIN_POLL_INTERVAL_SECONDS = 1;
     private static final int MAX_POLL_INTERVAL_SECONDS = 300;
 
@@ -93,6 +94,7 @@ public class ObservabilityService {
 
     public TargetStatus register(ObservabilityTarget target) {
         ObservabilityTarget normalized = normalize(target);
+        normalized.setLastHeartbeatAt(Instant.now().toString());
         targetRepository.save(normalized);
         scheduleTarget(normalized);
         return statusFor(normalized.getProxyId());
@@ -257,6 +259,8 @@ public class ObservabilityService {
         writeGauge(out, "redis_proxy_control_plane_large_response_total", summary.totals().largeResponseTotal());
         writeGauge(out, "redis_proxy_control_plane_slow_query_observed_total", summary.totals().slowQueryObservedTotal());
         writeGauge(out, "redis_proxy_control_plane_slow_query_tracked_keys", summary.totals().slowQueryTracked());
+        writeGauge(out, "redis_proxy_control_plane_observability_targets", summary.targets().size());
+        writeGauge(out, "redis_proxy_control_plane_observability_unreachable_targets", summary.targets().stream().filter(target -> !target.healthy()).count());
         return out.toString();
     }
 
@@ -321,21 +325,49 @@ public class ObservabilityService {
         ObservabilityTarget source = target == null ? snapshot.target() : target;
         return new TargetStatus(
                 source.getProxyId(),
+                source.getGroup(),
+                source.getAdvertiseIp(),
+                source.getAdvertisePort(),
                 source.getAdminUrl(),
                 source.getDataplane(),
                 source.getCluster(),
                 source.getPollIntervalSeconds(),
                 resourceAttributes(source),
-                snapshot != null && snapshot.healthy(),
+                parseInstant(source.getLastHeartbeatAt()).orElse(null),
+                source.getHeartbeatTtlSeconds(),
+                source.getRegistrationSource(),
+                snapshot != null && snapshot.healthy() && !heartbeatExpired(source),
                 snapshot == null ? null : snapshot.collectedAt(),
                 snapshot == null ? "not collected" : snapshot.error());
     }
 
     private RouteConvergenceInstance convergenceInstance(ObservabilityTarget target, RouteStatus expected) {
+        RouteStatus.GroupRouteStatus groupExpected = expected.expectedForGroup(target.getGroup());
         Snapshot snapshot = snapshots.get(target.getProxyId());
+        if (heartbeatExpired(target)) {
+            return new RouteConvergenceInstance(
+                    target.getProxyId(),
+                    target.getGroup(),
+                    target.getAdvertiseIp(),
+                    target.getAdvertisePort(),
+                    target.getDataplane(),
+                    target.getAdminUrl(),
+                    false,
+                    0,
+                    "",
+                    "",
+                    0,
+                    0,
+                    snapshot == null ? null : snapshot.collectedAt(),
+                    "UNREACHABLE",
+                    "heartbeat expired");
+        }
         if (snapshot == null || !snapshot.healthy() || snapshot.routeSnapshot() == null) {
             return new RouteConvergenceInstance(
                     target.getProxyId(),
+                    target.getGroup(),
+                    target.getAdvertiseIp(),
+                    target.getAdvertisePort(),
                     target.getDataplane(),
                     target.getAdminUrl(),
                     false,
@@ -351,18 +383,24 @@ public class ObservabilityService {
         RouteSnapshotObservation route = snapshot.routeSnapshot();
         String status = "CONVERGED";
         String reason = "";
-        if (route.epoch() < expected.expectedRouteEpoch()) {
+        if (!"success".equalsIgnoreCase(route.lastApplyResult())) {
+            status = "STALE";
+            reason = "last apply result is not success";
+        } else if (route.epoch() < groupExpected.expectedRouteEpoch()) {
             status = "STALE";
             reason = "route epoch is behind expected";
-        } else if (route.epoch() == expected.expectedRouteEpoch() && !Objects.equals(route.configHash(), expected.expectedConfigHash())) {
+        } else if (route.epoch() == groupExpected.expectedRouteEpoch() && !Objects.equals(route.configHash(), groupExpected.expectedConfigHash())) {
             status = "DRIFT";
             reason = "route epoch matches but config hash differs";
-        } else if (route.epoch() > expected.expectedRouteEpoch()) {
+        } else if (route.epoch() > groupExpected.expectedRouteEpoch()) {
             status = "DRIFT";
             reason = "route epoch is ahead of expected";
         }
         return new RouteConvergenceInstance(
                 target.getProxyId(),
+                route.group(),
+                route.advertiseIp(),
+                route.advertisePort(),
                 target.getDataplane(),
                 target.getAdminUrl(),
                 true,
@@ -455,6 +493,9 @@ public class ObservabilityService {
                 .toList();
         RouteSnapshotObservation routeSnapshot = new RouteSnapshotObservation(
                 target.getProxyId(),
+                defaultString(string(routePayload, "group"), target.getGroup()),
+                defaultString(string(routePayload, "advertiseIp"), target.getAdvertiseIp()),
+                number(routePayload, "advertisePort").intValue() == 0 ? target.getAdvertisePort() : number(routePayload, "advertisePort").intValue(),
                 target.getDataplane(),
                 target.getAdminUrl(),
                 true,
@@ -620,6 +661,9 @@ public class ObservabilityService {
         }
         ObservabilityTarget target = copyTarget(input);
         target.setProxyId(input.getProxyId().trim());
+        target.setGroup(blank(input.getGroup()) ? "default" : input.getGroup().trim());
+        target.setAdvertiseIp(input.getAdvertiseIp() == null ? "" : input.getAdvertiseIp().trim());
+        target.setAdvertisePort(Math.max(0, input.getAdvertisePort()));
         target.setAdminUrl(trim(input.getAdminUrl()));
         target.setDataplane(input.getDataplane().trim());
         target.setCluster(input.getCluster() == null ? "" : input.getCluster().trim());
@@ -627,6 +671,10 @@ public class ObservabilityService {
         target.setServiceName(blank(input.getServiceName()) ? "redis-proxy-dataplane" : input.getServiceName().trim());
         target.setServiceInstanceId(blank(input.getServiceInstanceId()) ? target.getProxyId() : input.getServiceInstanceId().trim());
         target.setDeploymentEnvironmentName(input.getDeploymentEnvironmentName() == null ? "" : input.getDeploymentEnvironmentName().trim());
+        target.setRegistrationSource(blank(input.getRegistrationSource()) ? "manual" : input.getRegistrationSource().trim());
+        target.setLastHeartbeatAt(input.getLastHeartbeatAt() == null ? "" : input.getLastHeartbeatAt().trim());
+        int ttl = input.getHeartbeatTtlSeconds() <= 0 ? DEFAULT_HEARTBEAT_TTL_SECONDS : input.getHeartbeatTtlSeconds();
+        target.setHeartbeatTtlSeconds(Math.min(Math.max(ttl, 1), 3600));
         int interval = input.getPollIntervalSeconds() <= 0 ? DEFAULT_POLL_INTERVAL_SECONDS : input.getPollIntervalSeconds();
         target.setPollIntervalSeconds(Math.min(Math.max(interval, MIN_POLL_INTERVAL_SECONDS), MAX_POLL_INTERVAL_SECONDS));
         return target;
@@ -635,6 +683,9 @@ public class ObservabilityService {
     private static ObservabilityTarget copyTarget(ObservabilityTarget source) {
         ObservabilityTarget target = new ObservabilityTarget();
         target.setProxyId(source.getProxyId());
+        target.setGroup(source.getGroup());
+        target.setAdvertiseIp(source.getAdvertiseIp());
+        target.setAdvertisePort(source.getAdvertisePort());
         target.setAdminUrl(source.getAdminUrl());
         target.setDataplane(source.getDataplane());
         target.setCluster(source.getCluster());
@@ -643,7 +694,33 @@ public class ObservabilityService {
         target.setServiceName(source.getServiceName());
         target.setServiceInstanceId(source.getServiceInstanceId());
         target.setDeploymentEnvironmentName(source.getDeploymentEnvironmentName());
+        target.setRegistrationSource(source.getRegistrationSource());
+        target.setLastHeartbeatAt(source.getLastHeartbeatAt());
+        target.setHeartbeatTtlSeconds(source.getHeartbeatTtlSeconds());
         return target;
+    }
+
+    private static boolean heartbeatExpired(ObservabilityTarget target) {
+        if (!"dataplane".equalsIgnoreCase(target.getRegistrationSource())) {
+            return false;
+        }
+        Optional<Instant> heartbeat = parseInstant(target.getLastHeartbeatAt());
+        if (heartbeat.isEmpty()) {
+            return false;
+        }
+        int ttl = target.getHeartbeatTtlSeconds() <= 0 ? DEFAULT_HEARTBEAT_TTL_SECONDS : target.getHeartbeatTtlSeconds();
+        return heartbeat.get().plusSeconds(ttl).isBefore(Instant.now());
+    }
+
+    private static Optional<Instant> parseInstant(String value) {
+        if (blank(value)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Instant.parse(value));
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
     }
 
     private static Map<String, String> resourceAttributes(ObservabilityTarget target) {
@@ -655,8 +732,15 @@ public class ObservabilityService {
             attributes.put("deployment.environment.name", target.getDeploymentEnvironmentName());
         }
         attributes.put("redis.proxy.dataplane", target.getDataplane());
+        attributes.put("redis.proxy.group", blank(target.getGroup()) ? "default" : target.getGroup());
         if (!blank(target.getCluster())) {
             attributes.put("redis.proxy.cluster", target.getCluster());
+        }
+        if (!blank(target.getAdvertiseIp())) {
+            attributes.put("redis.proxy.advertise.ip", target.getAdvertiseIp());
+        }
+        if (target.getAdvertisePort() > 0) {
+            attributes.put("redis.proxy.advertise.port", Integer.toString(target.getAdvertisePort()));
         }
         return Map.copyOf(attributes);
     }
@@ -786,6 +870,10 @@ public class ObservabilityService {
     private static String string(Map<String, Object> item, String field) {
         Object value = item.get(field);
         return value == null ? "" : value.toString();
+    }
+
+    private static String defaultString(String value, String fallback) {
+        return blank(value) ? fallback : value;
     }
 
     private static Number number(Map<String, Object> item, String field) {

@@ -1,11 +1,14 @@
 package com.zuomagai.redisproxy.dataplane.config;
 
 import java.util.ArrayList;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Enumeration;
 import java.util.Set;
 import java.util.Locale;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -20,6 +23,7 @@ public class ProxyProperties {
     private Routing routing = new Routing();
     private Limits limits = new Limits();
     private ControlPlane controlPlane = new ControlPlane();
+    private Registration registration = new Registration();
     private Analysis analysis = new Analysis();
     private Governance governance = new Governance();
 
@@ -27,9 +31,8 @@ public class ProxyProperties {
         if (!"standalone".equals(mode) && !"cluster".equals(mode)) {
             throw new IllegalArgumentException("unsupported mode: " + mode);
         }
-        if (instance.proxyId == null || instance.proxyId.isBlank()) {
-            instance.proxyId = defaultProxyId();
-        }
+        applyInstanceDefaults();
+        parseListenPort(server.listen);
         if (routing.defaultCluster == null || routing.defaultCluster.isBlank()) {
             throw new IllegalArgumentException("routing.defaultCluster is required");
         }
@@ -57,6 +60,15 @@ public class ProxyProperties {
         }
         if (controlPlane.requestTimeoutMillis < 0) {
             throw new IllegalArgumentException("controlPlane.requestTimeoutMillis must be >= 0");
+        }
+        if (registration.enabled && (registration.controlPlaneUrl == null || registration.controlPlaneUrl.isBlank())) {
+            throw new IllegalArgumentException("registration.controlPlaneUrl is required when registration.enabled=true");
+        }
+        if (registration.heartbeatIntervalSeconds < 0) {
+            throw new IllegalArgumentException("registration.heartbeatIntervalSeconds must be >= 0");
+        }
+        if (registration.pollIntervalSeconds < 0) {
+            throw new IllegalArgumentException("registration.pollIntervalSeconds must be >= 0");
         }
         governance.applyDefaults();
         governance.validate();
@@ -118,24 +130,106 @@ public class ProxyProperties {
     public void setLimits(Limits limits) { this.limits = limits; }
     public ControlPlane getControlPlane() { return controlPlane; }
     public void setControlPlane(ControlPlane controlPlane) { this.controlPlane = controlPlane; }
+    public Registration getRegistration() { return registration; }
+    public void setRegistration(Registration registration) { this.registration = registration == null ? new Registration() : registration; }
     public Analysis getAnalysis() { return analysis; }
     public void setAnalysis(Analysis analysis) { this.analysis = analysis; }
     public Governance getGovernance() { return governance; }
     public void setGovernance(Governance governance) { this.governance = governance; }
 
-    private static String defaultProxyId() {
+    private void applyInstanceDefaults() {
+        if (instance.group == null || instance.group.isBlank()) {
+            instance.group = "default";
+        }
+        if (instance.advertiseIp == null || instance.advertiseIp.isBlank()) {
+            instance.advertiseIp = detectAdvertiseIp();
+        }
+        if (instance.advertisePort == 0) {
+            instance.advertisePort = parseListenPort(server.listen);
+        }
+        if (instance.advertisePort <= 0) {
+            throw new IllegalArgumentException("instance.advertisePort must be positive");
+        }
+        if (instance.proxyId == null || instance.proxyId.isBlank()) {
+            instance.proxyId = buildProxyId(instance.group, instance.advertiseIp, instance.advertisePort);
+        }
+    }
+
+    private static String detectAdvertiseIp() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (!iface.isUp() || iface.isLoopback()) {
+                    continue;
+                }
+                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (!address.isLoopbackAddress() && address.getHostAddress().indexOf(':') < 0) {
+                        return address.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
         try {
             String host = java.net.InetAddress.getLocalHost().getHostName();
-            return host == null || host.isBlank() ? "proxy-java" : host;
+            return host == null || host.isBlank() ? "127.0.0.1" : host;
         } catch (Exception e) {
-            return "proxy-java";
+            return "127.0.0.1";
         }
+    }
+
+    static String buildProxyId(String group, String advertiseIp, int advertisePort) {
+        return sanitizeProxyIdPart(group) + "-" + sanitizeProxyIdPart(advertiseIp) + "-" + advertisePort;
+    }
+
+    private static String sanitizeProxyIdPart(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        StringBuilder builder = new StringBuilder();
+        boolean lastDash = false;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            boolean valid = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+            if (valid) {
+                builder.append(ch);
+                lastDash = false;
+            } else if (!lastDash) {
+                builder.append('-');
+                lastDash = true;
+            }
+        }
+        String result = builder.toString().replaceAll("^-+|-+$", "");
+        return result.isBlank() ? "default" : result;
+    }
+
+    static int parseListenPort(String listen) {
+        String value = listen == null ? "" : listen.trim();
+        int index = value.lastIndexOf(':');
+        if (index < 0 || index == value.length() - 1) {
+            throw new IllegalArgumentException("server.listen must be host:port");
+        }
+        int port = Integer.parseInt(value.substring(index + 1));
+        if (port <= 0) {
+            throw new IllegalArgumentException("server.listen port must be positive");
+        }
+        return port;
     }
 
     public static class Instance {
         private String proxyId = "";
+        private String group = "";
+        private String advertiseIp = "";
+        private int advertisePort;
         public String getProxyId() { return proxyId; }
         public void setProxyId(String proxyId) { this.proxyId = proxyId; }
+        public String getGroup() { return group; }
+        public void setGroup(String group) { this.group = group == null ? "" : group; }
+        public String getAdvertiseIp() { return advertiseIp; }
+        public void setAdvertiseIp(String advertiseIp) { this.advertiseIp = advertiseIp == null ? "" : advertiseIp; }
+        public int getAdvertisePort() { return advertisePort; }
+        public void setAdvertisePort(int advertisePort) { this.advertisePort = advertisePort; }
     }
 
     public static class Server {
@@ -259,6 +353,42 @@ public class ProxyProperties {
         public void setWatchTimeoutSeconds(int watchTimeoutSeconds) { this.watchTimeoutSeconds = watchTimeoutSeconds; }
         public int getRequestTimeoutMillis() { return requestTimeoutMillis; }
         public void setRequestTimeoutMillis(int requestTimeoutMillis) { this.requestTimeoutMillis = requestTimeoutMillis; }
+    }
+
+    public static class Registration {
+        private boolean enabled;
+        private String controlPlaneUrl = "http://127.0.0.1:8090/api/v1";
+        private String adminUrl = "";
+        private String dataplane = "java";
+        private String cluster = "";
+        private int heartbeatIntervalSeconds = 15;
+        private int pollIntervalSeconds = 15;
+        private String serviceNamespace = "redis-proxy";
+        private String serviceName = "redis-proxy-dataplane";
+        private String serviceInstanceId = "";
+        private String deploymentEnvironmentName = "";
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getControlPlaneUrl() { return controlPlaneUrl; }
+        public void setControlPlaneUrl(String controlPlaneUrl) { this.controlPlaneUrl = controlPlaneUrl; }
+        public String getAdminUrl() { return adminUrl; }
+        public void setAdminUrl(String adminUrl) { this.adminUrl = adminUrl == null ? "" : adminUrl; }
+        public String getDataplane() { return dataplane; }
+        public void setDataplane(String dataplane) { this.dataplane = dataplane == null || dataplane.isBlank() ? "java" : dataplane; }
+        public String getCluster() { return cluster; }
+        public void setCluster(String cluster) { this.cluster = cluster == null ? "" : cluster; }
+        public int getHeartbeatIntervalSeconds() { return heartbeatIntervalSeconds; }
+        public void setHeartbeatIntervalSeconds(int heartbeatIntervalSeconds) { this.heartbeatIntervalSeconds = heartbeatIntervalSeconds; }
+        public int getPollIntervalSeconds() { return pollIntervalSeconds; }
+        public void setPollIntervalSeconds(int pollIntervalSeconds) { this.pollIntervalSeconds = pollIntervalSeconds; }
+        public String getServiceNamespace() { return serviceNamespace; }
+        public void setServiceNamespace(String serviceNamespace) { this.serviceNamespace = serviceNamespace == null || serviceNamespace.isBlank() ? "redis-proxy" : serviceNamespace; }
+        public String getServiceName() { return serviceName; }
+        public void setServiceName(String serviceName) { this.serviceName = serviceName == null || serviceName.isBlank() ? "redis-proxy-dataplane" : serviceName; }
+        public String getServiceInstanceId() { return serviceInstanceId; }
+        public void setServiceInstanceId(String serviceInstanceId) { this.serviceInstanceId = serviceInstanceId == null ? "" : serviceInstanceId; }
+        public String getDeploymentEnvironmentName() { return deploymentEnvironmentName; }
+        public void setDeploymentEnvironmentName(String deploymentEnvironmentName) { this.deploymentEnvironmentName = deploymentEnvironmentName == null ? "" : deploymentEnvironmentName; }
     }
 
     public static class Limits {

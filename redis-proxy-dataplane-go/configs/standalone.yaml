@@ -1,3 +1,9 @@
+instance:
+  proxyId: ""
+  group: "default"
+  advertiseIp: ""
+  advertisePort: 0
+
 server:
   listen: "0.0.0.0:6379"
 
@@ -30,6 +36,19 @@ controlPlane:
   pollIntervalSeconds: 5
   watchTimeoutSeconds: 30
   requestTimeoutMillis: 1000
+
+registration:
+  enabled: false
+  controlPlaneUrl: "http://127.0.0.1:8090/api/v1"
+  adminUrl: "http://127.0.0.1:8080"
+  dataplane: "go"
+  cluster: "redis-a"
+  heartbeatIntervalSeconds: 15
+  pollIntervalSeconds: 15
+  serviceNamespace: "redis-proxy"
+  serviceName: "redis-proxy-dataplane"
+  serviceInstanceId: ""
+  deploymentEnvironmentName: ""
 
 limits:
   maxPipelineDepth: 1024

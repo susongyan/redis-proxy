@@ -46,12 +46,14 @@ public class ConfigController {
     @GetMapping("/api/v1/config/watch")
     public DeferredResult<ResponseEntity<ProxyConfig>> watchConfig(
             @RequestParam("epoch") long routeEpoch,
+            @RequestParam(value = "group", defaultValue = "default") String group,
+            @RequestParam(value = "proxyId", required = false) String proxyId,
             @RequestParam(value = "timeoutSeconds", defaultValue = "30") long timeoutSeconds) {
         long boundedTimeoutSeconds = Math.min(Math.max(1, timeoutSeconds), 60);
         DeferredResult<ResponseEntity<ProxyConfig>> result =
                 new DeferredResult<>(Duration.ofSeconds(boundedTimeoutSeconds + 1).toMillis());
         result.onTimeout(() -> result.setResult(ResponseEntity.noContent().build()));
-        configService.watch(routeEpoch, Duration.ofSeconds(boundedTimeoutSeconds))
+        configService.watch(routeEpoch, group, Duration.ofSeconds(boundedTimeoutSeconds))
                 .whenComplete((config, error) -> {
                     if (error != null) {
                         result.setErrorResult(error);

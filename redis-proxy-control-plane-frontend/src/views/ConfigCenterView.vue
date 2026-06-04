@@ -3,11 +3,12 @@ import { Check, Delete, Plus, Refresh, RefreshLeft } from '@element-plus/icons-v
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, ref } from 'vue';
 import { api } from '../api/client';
-import type { Cluster, ConfigDiff, ConfigVersion, KeyRule, Namespace, ProxyConfig, RouteRule } from '../api/types';
+import type { Cluster, ConfigDiff, ConfigVersion, KeyRule, Namespace, ProxyConfig, ProxyGroup, RouteRule } from '../api/types';
+import ConvergenceStatusHelp from '../components/ConvergenceStatusHelp.vue';
 import StatusTag from '../components/StatusTag.vue';
 import { useControlPlaneStore } from '../stores/controlPlane';
 import { buildSideBySideYamlDiff, buildYamlDiff } from '../utils/configDiff';
-import { formatDateTime, maskTokens } from '../utils/status';
+import { compactHash, convergenceTone, formatDateTime, maskTokens } from '../utils/status';
 import { toYaml } from '../utils/yaml';
 
 type DraftConfig = ProxyConfig & {
@@ -16,6 +17,7 @@ type DraftConfig = ProxyConfig & {
   backends: { clusters: Cluster[] };
   routing: NonNullable<ProxyConfig['routing']> & { rules: RouteRule[] };
   limits: NonNullable<ProxyConfig['limits']>;
+  proxyGroups: ProxyGroup[];
   governance: NonNullable<ProxyConfig['governance']> & {
     commandPolicy: NonNullable<NonNullable<ProxyConfig['governance']>['commandPolicy']>;
     namespaces: Namespace[];
@@ -23,7 +25,7 @@ type DraftConfig = ProxyConfig & {
 };
 
 const store = useControlPlaneStore();
-const activeTab = ref('visual');
+const activeTab = ref('current');
 const editorText = ref('');
 const operator = ref('system');
 const reason = ref('');
@@ -31,13 +33,62 @@ const selectedVersion = ref<number>();
 const diffTarget = ref<number>();
 const diff = ref<ConfigDiff>();
 const draft = ref<DraftConfig>(normalizeConfig());
+const waitingConvergence = ref(false);
+const yamlDrawerVisible = ref(false);
+const readonlyViewMode = ref<'json' | 'yaml'>('json');
+const versionConfigDialogVisible = ref(false);
+const versionConfigViewMode = ref<'json' | 'yaml'>('json');
+const viewedVersion = ref<ConfigVersion>();
 
+const isEditing = computed(() => activeTab.value === 'visual' || activeTab.value === 'json');
 const yamlPreview = computed(() => toYaml(maskTokens(draft.value)));
 const currentMaskedJson = computed(() => JSON.stringify(maskTokens(store.config || {}), null, 2));
+const currentMaskedYaml = computed(() => toYaml(maskTokens(store.config || {})));
+const readonlyConfigText = computed(() => (readonlyViewMode.value === 'yaml' ? currentMaskedYaml.value : currentMaskedJson.value));
+const viewedVersionMaskedJson = computed(() => JSON.stringify(maskTokens(viewedVersion.value?.config || {}), null, 2));
+const viewedVersionMaskedYaml = computed(() => toYaml(maskTokens(viewedVersion.value?.config || {})));
+const viewedVersionText = computed(() => (versionConfigViewMode.value === 'yaml' ? viewedVersionMaskedYaml.value : viewedVersionMaskedJson.value));
 const selectedFromVersion = computed(() => store.versions.find((version) => version.versionId === selectedVersion.value));
 const selectedToVersion = computed(() => store.versions.find((version) => version.versionId === diffTarget.value));
 const latestVersion = computed(() => store.versions.reduce<ConfigVersion | undefined>((latest, version) => (!latest || version.versionId > latest.versionId ? version : latest), undefined));
 const sortedVersions = computed(() => [...store.versions].sort((left, right) => right.versionId - left.versionId));
+const convergenceGroups = computed(() => {
+  const groups = new Map<
+    string,
+    {
+      group: string;
+      total: number;
+      converged: number;
+      stale: number;
+      drift: number;
+      unreachable: number;
+      status: string;
+      proxies: NonNullable<typeof store.convergence>['proxies'];
+    }
+  >();
+  for (const proxy of store.convergence?.proxies || []) {
+    const groupName = proxy.group || 'default';
+    const current = groups.get(groupName) || {
+      group: groupName,
+      total: 0,
+      converged: 0,
+      stale: 0,
+      drift: 0,
+      unreachable: 0,
+      status: 'CONVERGED',
+      proxies: []
+    };
+    current.total += 1;
+    current.proxies.push(proxy);
+    if (proxy.status === 'CONVERGED') current.converged += 1;
+    if (proxy.status === 'STALE') current.stale += 1;
+    if (proxy.status === 'DRIFT') current.drift += 1;
+    if (proxy.status === 'UNREACHABLE') current.unreachable += 1;
+    current.status = mergeConvergenceStatus(current.status, proxy.status);
+    groups.set(groupName, current);
+  }
+  return [...groups.values()].sort((left, right) => left.group.localeCompare(right.group));
+});
 const diffDialogVisible = ref(false);
 const diffViewMode = ref<'side-by-side' | 'unified'>('side-by-side');
 const visualDiff = computed(() => {
@@ -68,6 +119,18 @@ function normalizeConfig(input?: ProxyConfig): DraftConfig {
   config.routing.rules ||= [];
   config.limits ||= {};
   config.analysis ||= {};
+  config.proxyGroups ||= [];
+  config.proxyGroups.forEach((group) => {
+    group.enabledClusters ||= [];
+    group.routing ||= {
+      defaultCluster: group.enabledClusters[0] || config.routing.defaultCluster || '',
+      routeEpoch: config.routing.routeEpoch,
+      clusterSlotsRefreshIntervalSeconds: config.routing.clusterSlotsRefreshIntervalSeconds,
+      backendAffinityStrategy: config.routing.backendAffinityStrategy || 'client',
+      rules: []
+    };
+    group.routing.rules ||= [];
+  });
   config.governance ||= { enabled: false, requireAuth: false, commandPolicy: {}, namespaces: [] };
   config.governance.commandPolicy ||= {};
   config.governance.commandPolicy.deniedCommands ||= [];
@@ -89,6 +152,21 @@ function resetEditor() {
   editorText.value = JSON.stringify(draft.value, null, 2);
 }
 
+function startStructuredEdit() {
+  resetEditor();
+  activeTab.value = 'visual';
+}
+
+function startJsonEdit() {
+  resetEditor();
+  activeTab.value = 'json';
+}
+
+function cancelEdit() {
+  resetEditor();
+  activeTab.value = 'current';
+}
+
 async function load() {
   await store.loadConfigDomain();
   resetEditor();
@@ -96,7 +174,7 @@ async function load() {
 
 function applyJsonToForm() {
   draft.value = normalizeConfig(JSON.parse(editorText.value) as ProxyConfig);
-  ElMessage.success('JSON 已应用到结构化表单');
+  ElMessage.success('JSON 已应用到配置草稿');
 }
 
 async function publish() {
@@ -106,9 +184,27 @@ async function publish() {
     { type: 'warning' }
   );
   await api.config.publish(clone(draft.value), operator.value, reason.value || 'frontend-publish');
-  ElMessage.success('配置已发布');
+  ElMessage.info('配置已发布，正在等待数据面收敛');
   await load();
-  await store.refreshConvergence();
+  await waitForConvergence();
+  activeTab.value = 'current';
+}
+
+async function waitForConvergence() {
+  waitingConvergence.value = true;
+  try {
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      await store.refreshConvergence();
+      if (store.convergence?.status === 'CONVERGED') {
+        ElMessage.success('所有已注册数据面已生效最新配置');
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    ElMessage.warning(`配置已发布，但数据面尚未全部收敛：${store.convergence?.status || 'UNKNOWN'}`);
+  } finally {
+    waitingConvergence.value = false;
+  }
 }
 
 async function rollback(version: ConfigVersion) {
@@ -151,6 +247,23 @@ function versionRowClass({ row }: { row: ConfigVersion }) {
   return '';
 }
 
+function viewVersionConfig(version: ConfigVersion) {
+  viewedVersion.value = version;
+  versionConfigViewMode.value = 'json';
+  versionConfigDialogVisible.value = true;
+}
+
+function mergeConvergenceStatus(left: string, right: string) {
+  const weight: Record<string, number> = {
+    CONVERGED: 0,
+    PARTIAL: 1,
+    STALE: 2,
+    DRIFT: 3,
+    UNREACHABLE: 4
+  };
+  return (weight[right] ?? 1) > (weight[left] ?? 1) ? right : left;
+}
+
 function addCluster() {
   draft.value.backends.clusters.push({
     name: `redis-${draft.value.backends.clusters.length + 1}`,
@@ -166,6 +279,36 @@ function addRouteRule() {
     cluster: draft.value.routing.defaultCluster || '',
     trafficPercent: 100
   });
+}
+
+function newRouteRule(prefix: string, cluster: string): RouteRule {
+  return {
+    name: `${prefix}-${Date.now().toString(36)}`,
+    cluster,
+    trafficPercent: 100
+  };
+}
+
+function addProxyGroup() {
+  const enabledClusters = draft.value.backends.clusters.map((cluster) => cluster.name).filter(Boolean);
+  const defaultCluster = draft.value.routing.defaultCluster || enabledClusters[0] || '';
+  draft.value.proxyGroups.push({
+    name: `group-${draft.value.proxyGroups.length + 1}`,
+    enabledClusters,
+    routing: {
+      defaultCluster,
+      routeEpoch: draft.value.routing.routeEpoch,
+      clusterSlotsRefreshIntervalSeconds: draft.value.routing.clusterSlotsRefreshIntervalSeconds,
+      backendAffinityStrategy: draft.value.routing.backendAffinityStrategy || 'client',
+      rules: []
+    }
+  });
+}
+
+function addProxyGroupRule(group: ProxyGroup) {
+  group.routing ||= { defaultCluster: group.enabledClusters[0] || '', rules: [] };
+  group.routing.rules ||= [];
+  group.routing.rules.push(newRouteRule(`${group.name || 'group'}-rule`, group.routing.defaultCluster || group.enabledClusters[0] || ''));
 }
 
 function addNamespace() {
@@ -216,28 +359,111 @@ onMounted(load);
   <div v-loading="store.loading">
     <div class="toolbar">
       <div class="toolbar-left">
-        <el-input v-model="operator" placeholder="operator" style="width: 180px" />
-        <el-input v-model="reason" placeholder="reason" style="width: 280px" />
+        <template v-if="isEditing">
+          <el-input v-model="operator" placeholder="operator" style="width: 180px" />
+          <el-input v-model="reason" placeholder="reason" style="width: 280px" />
+        </template>
+        <template v-else>
+          <span class="subtle">默认只读查看；需要变更时再进入编辑态。</span>
+        </template>
       </div>
       <div class="toolbar-right">
         <el-button :icon="Refresh" @click="load">刷新</el-button>
-        <el-button :icon="RefreshLeft" @click="resetEditor">重置</el-button>
-        <el-button type="primary" :icon="Check" @click="publish">发布</el-button>
+        <template v-if="isEditing">
+          <el-button @click="cancelEdit">取消编辑</el-button>
+          <el-button :icon="RefreshLeft" @click="resetEditor">重置为当前配置</el-button>
+          <el-button type="primary" :icon="Check" :loading="waitingConvergence" @click="publish">发布</el-button>
+        </template>
+        <template v-else>
+          <el-button @click="startStructuredEdit">进入结构化编辑</el-button>
+          <el-button type="primary" @click="startJsonEdit">进入高级 JSON 编辑</el-button>
+        </template>
       </div>
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="error" show-icon class="section" />
 
+    <section class="panel section">
+      <div class="panel-header">
+        <div class="title-with-help">
+          <h2>数据面分组收敛</h2>
+          <ConvergenceStatusHelp />
+        </div>
+        <div class="toolbar-right">
+          <StatusTag :label="store.convergence?.status || 'UNKNOWN'" :type="convergenceTone(store.convergence?.status)" />
+          <span class="subtle">expected epoch={{ store.convergence?.expectedRouteEpoch || '-' }}</span>
+          <span class="subtle">hash={{ compactHash(store.convergence?.expectedConfigHash) }}</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <el-alert
+          title="proxy 分组是数据面本地部署身份，不会写入全局发布 YAML；配置发布后通过每台 proxy 的 routeEpoch + configHash 判断是否实际生效。"
+          type="info"
+          show-icon
+          :closable="false"
+          class="section"
+        />
+        <div v-if="convergenceGroups.length" class="group-convergence-grid">
+          <div v-for="group in convergenceGroups" :key="group.group" class="group-convergence-card">
+            <div class="group-card-header">
+              <strong>{{ group.group }}</strong>
+              <StatusTag :label="group.status" :type="convergenceTone(group.status)" />
+            </div>
+            <div class="group-card-metrics">
+              <span>total <strong>{{ group.total }}</strong></span>
+              <span>ok <strong>{{ group.converged }}</strong></span>
+              <span>stale <strong>{{ group.stale }}</strong></span>
+              <span>drift <strong>{{ group.drift }}</strong></span>
+              <span>down <strong>{{ group.unreachable }}</strong></span>
+            </div>
+          </div>
+        </div>
+        <el-empty v-else description="暂无已注册 proxy；启用数据面 registration 或在 Proxy 实例页手动注册后参与收敛判断" />
+        <el-table v-if="store.convergence?.proxies?.length" :data="store.convergence.proxies" size="small" class="section">
+          <el-table-column prop="group" label="group" width="120" />
+          <el-table-column prop="proxyId" label="proxyId" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="dataplane" label="dataplane" width="100" />
+          <el-table-column prop="advertiseIp" label="ip" width="130" />
+          <el-table-column prop="advertisePort" label="dataPort" width="96" />
+          <el-table-column prop="epoch" label="epoch" width="86" />
+          <el-table-column label="hash" width="170"><template #default="{ row }">{{ compactHash(row.configHash) }}</template></el-table-column>
+          <el-table-column label="status" width="130">
+            <template #default="{ row }"><StatusTag :label="row.status" :type="convergenceTone(row.status)" /></template>
+          </el-table-column>
+          <el-table-column prop="reason" label="reason" min-width="180" show-overflow-tooltip />
+          <el-table-column label="lastPoll" width="176"><template #default="{ row }">{{ formatDateTime(row.lastPollTime) }}</template></el-table-column>
+        </el-table>
+      </div>
+    </section>
+
     <el-tabs v-model="activeTab">
-      <el-tab-pane label="结构化编辑 + YAML 预览" name="visual">
+      <el-tab-pane label="当前配置" name="current">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>当前生效配置</h2>
+              <span class="subtle">只读展示，token/password 已掩码；控制面存储和发布仍使用 JSON。</span>
+            </div>
+            <el-segmented v-model="readonlyViewMode" :options="[{ label: 'JSON', value: 'json' }, { label: 'YAML 预览', value: 'yaml' }]" />
+          </div>
+          <div class="panel-body">
+            <pre class="code-block config-readonly-block">{{ readonlyConfigText }}</pre>
+          </div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="activeTab === 'visual'" label="结构化编辑" name="visual">
         <section class="config-workbench">
           <div class="panel">
             <div class="panel-header">
-              <h2>结构化编辑</h2>
-              <span class="subtle">适合常规发布、治理和切流配置修改</span>
+              <div>
+                <h2>结构化编辑</h2>
+                <span class="subtle">适合常规发布、治理和切流配置修改</span>
+              </div>
+              <el-button @click="yamlDrawerVisible = true">YAML 预览</el-button>
             </div>
             <div class="panel-body config-form-scroll">
-              <el-collapse :model-value="['basic', 'clusters', 'rules', 'limits', 'governance']">
+              <el-collapse :model-value="['basic', 'clusters', 'proxyGroups', 'rules', 'limits', 'governance']">
                 <el-collapse-item title="基础与路由入口" name="basic">
                   <el-form label-width="170px">
                     <el-form-item label="server.listen"><el-input v-model="draft.server.listen" /></el-form-item>
@@ -278,6 +504,61 @@ onMounted(load);
                       <el-form-item label="connections/node"><el-input-number v-model="cluster.pool!.connectionsPerNode" :min="1" /></el-form-item>
                       <el-form-item label="maxInflight"><el-input-number v-model="cluster.pool!.maxInflightPerConnection" :min="1" /></el-form-item>
                     </el-form>
+                  </div>
+                </el-collapse-item>
+
+                <el-collapse-item title="Proxy 分组路由" name="proxyGroups">
+                  <div class="toolbar">
+                    <span class="subtle">每个 group 只会收到 enabledClusters 引用的 Redis 集群和本组 routing；未配置 proxyGroups 时保持全局配置兼容。</span>
+                    <el-button :icon="Plus" @click="addProxyGroup">新增分组</el-button>
+                  </div>
+                  <el-empty v-if="!draft.proxyGroups.length" description="未配置 proxyGroups，数据面默认使用全局 routing/backends" />
+                  <div v-for="(group, groupIndex) in draft.proxyGroups" :key="groupIndex" class="nested-card">
+                    <div class="nested-card-title">
+                      <strong>{{ group.name || `group-${groupIndex + 1}` }}</strong>
+                      <el-button size="small" type="danger" :icon="Delete" @click="removeAt(draft.proxyGroups, groupIndex)" />
+                    </div>
+                    <el-form label-width="150px">
+                      <el-form-item label="group name"><el-input v-model="group.name" /></el-form-item>
+                      <el-form-item label="enabledClusters">
+                        <el-select v-model="group.enabledClusters" multiple filterable style="width: 100%">
+                          <el-option v-for="cluster in draft.backends.clusters" :key="cluster.name" :label="cluster.name" :value="cluster.name" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item label="defaultCluster">
+                        <el-select v-model="group.routing!.defaultCluster" filterable style="width: 240px">
+                          <el-option v-for="cluster in group.enabledClusters" :key="cluster" :label="cluster" :value="cluster" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item label="backendAffinity">
+                        <el-select v-model="group.routing!.backendAffinityStrategy" style="width: 180px">
+                          <el-option label="client" value="client" />
+                          <el-option label="keySlot" value="keySlot" />
+                          <el-option label="hashTag" value="hashTag" />
+                        </el-select>
+                      </el-form-item>
+                    </el-form>
+                    <div class="toolbar">
+                      <span class="subtle">组内规则只允许路由到 enabledClusters 中的 cluster</span>
+                      <el-button size="small" :icon="Plus" @click="addProxyGroupRule(group)">新增组内规则</el-button>
+                    </div>
+                    <el-table :data="group.routing?.rules || []" size="small">
+                      <el-table-column label="name" width="150"><template #default="{ row }"><el-input v-model="row.name" /></template></el-table-column>
+                      <el-table-column label="cluster" width="150">
+                        <template #default="{ row }">
+                          <el-select v-model="row.cluster" filterable>
+                            <el-option v-for="cluster in group.enabledClusters" :key="cluster" :label="cluster" :value="cluster" />
+                          </el-select>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="namespace" width="130"><template #default="{ row }"><el-input v-model="row.namespace" /></template></el-table-column>
+                      <el-table-column label="keyPrefix" width="160"><template #default="{ row }"><el-input v-model="row.keyPrefix" /></template></el-table-column>
+                      <el-table-column label="keyPattern" width="160"><template #default="{ row }"><el-input v-model="row.keyPattern" /></template></el-table-column>
+                      <el-table-column label="hashTag" width="120"><template #default="{ row }"><el-input v-model="row.hashTag" /></template></el-table-column>
+                      <el-table-column label="matchAll" width="100"><template #default="{ row }"><el-switch v-model="row.matchAll" /></template></el-table-column>
+                      <el-table-column label="%" width="110"><template #default="{ row }"><el-input-number v-model="row.trafficPercent" :min="0" :max="100" /></template></el-table-column>
+                      <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" @click="removeAt(group.routing!.rules!, $index)" /></template></el-table-column>
+                    </el-table>
                   </div>
                 </el-collapse-item>
 
@@ -362,36 +643,23 @@ onMounted(load);
               </el-collapse>
             </div>
           </div>
-
-          <div class="panel dark-panel">
-            <div class="panel-header">
-              <h2>YAML 预览</h2>
-              <span class="subtle">token 已掩码，仅用于发布前确认</span>
-            </div>
-            <div class="panel-body">
-              <pre class="code-block yaml-preview">{{ yamlPreview }}</pre>
-            </div>
-          </div>
         </section>
       </el-tab-pane>
 
-      <el-tab-pane label="高级 JSON" name="json">
-        <section class="grid-2">
-          <div class="panel">
-            <div class="panel-header"><h2>当前配置（token 掩码）</h2></div>
-            <div class="panel-body"><pre class="code-block">{{ currentMaskedJson }}</pre></div>
+      <el-tab-pane v-if="activeTab === 'json'" label="高级 JSON" name="json">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>高级 JSON 编辑</h2>
+              <span class="subtle">编辑内容来自当前配置 JSON；点击应用到草稿后再发布。</span>
+            </div>
+            <div>
+              <el-button :icon="RefreshLeft" @click="resetEditor">重置为当前配置</el-button>
+              <el-button @click="applyJsonToForm">应用到草稿</el-button>
+            </div>
           </div>
-          <div class="panel">
-            <div class="panel-header">
-              <h2>JSON 编辑器</h2>
-              <div>
-                <el-button :icon="RefreshLeft" @click="resetEditor">重置</el-button>
-                <el-button @click="applyJsonToForm">应用到表单</el-button>
-              </div>
-            </div>
-            <div class="panel-body">
-              <textarea v-model="editorText" class="json-editor" spellcheck="false"></textarea>
-            </div>
+          <div class="panel-body">
+            <textarea v-model="editorText" class="json-editor" spellcheck="false"></textarea>
           </div>
         </section>
       </el-tab-pane>
@@ -427,14 +695,24 @@ onMounted(load);
               <el-table-column label="publishedAt" width="168">
                 <template #default="{ row }">{{ formatDateTime(row.publishedAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="92" fixed="right">
-                <template #default="{ row }"><el-button size="small" type="warning" @click="rollback(row)">回滚</el-button></template>
+              <el-table-column label="操作" width="176" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" @click="viewVersionConfig(row)">查看配置</el-button>
+                  <el-button size="small" type="warning" @click="rollback(row)">回滚</el-button>
+                </template>
               </el-table-column>
             </el-table>
           </div>
         </section>
       </el-tab-pane>
     </el-tabs>
+
+    <el-drawer v-model="yamlDrawerVisible" title="YAML 预览" size="60%" append-to-body>
+      <div class="yaml-drawer-header">
+        <span class="subtle">token/password 已掩码，仅用于发布前确认；实际发布仍使用结构化表单中的真实配置。</span>
+      </div>
+      <pre class="code-block yaml-preview yaml-preview-drawer">{{ yamlPreview }}</pre>
+    </el-drawer>
 
     <el-dialog v-model="diffDialogVisible" class="diff-dialog" width="88vw" top="5vh" append-to-body>
       <template #header>
@@ -512,6 +790,19 @@ onMounted(load);
           </div>
         </div>
       </section>
+    </el-dialog>
+
+    <el-dialog v-model="versionConfigDialogVisible" width="76vw" top="6vh" append-to-body>
+      <template #header>
+        <div class="dialog-title">
+          <strong v-if="viewedVersion">版本配置 v{{ viewedVersion.versionId }} / epoch {{ viewedVersion.routeEpoch }}</strong>
+          <span>只读快照，token/password 已掩码；回滚会生成更大的 routeEpoch。</span>
+        </div>
+      </template>
+      <div class="version-config-toolbar">
+        <el-segmented v-model="versionConfigViewMode" :options="[{ label: 'JSON', value: 'json' }, { label: 'YAML 预览', value: 'yaml' }]" />
+      </div>
+      <pre class="code-block version-config-viewer">{{ viewedVersionText }}</pre>
     </el-dialog>
   </div>
 </template>

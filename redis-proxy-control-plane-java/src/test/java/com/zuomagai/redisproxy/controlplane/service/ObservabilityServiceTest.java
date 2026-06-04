@@ -20,6 +20,7 @@ class ObservabilityServiceTest {
     private HttpServer server;
     private final AtomicInteger otlpWrites = new AtomicInteger();
     private final AtomicInteger influxWrites = new AtomicInteger();
+    private String routeSnapshotBody = "{\"proxyId\":\"proxy-1\",\"group\":\"frontend\",\"advertiseIp\":\"10.0.0.1\",\"advertisePort\":6379,\"epoch\":2,\"configHash\":\"sha256:abc\",\"lastApplyResult\":\"success\",\"lastApplyTime\":10,\"lastPollTime\":11}";
 
     @AfterEach
     void tearDown() {
@@ -41,12 +42,16 @@ class ObservabilityServiceTest {
 
         assertThat(service.targets()).hasSize(1);
         assertThat(service.targets().getFirst().healthy()).isTrue();
+        assertThat(service.targets().getFirst().lastHeartbeatAt()).isNotNull();
+        assertThat(service.targets().getFirst().heartbeatTtlSeconds()).isEqualTo(45);
+        assertThat(service.targets().getFirst().registrationSource()).isEqualTo("manual");
         assertThat(service.targets().getFirst().resourceAttributes())
                 .containsEntry("service.namespace", "redis-proxy")
                 .containsEntry("service.name", "redis-proxy-dataplane")
                 .containsEntry("service.instance.id", "proxy-1")
                 .containsEntry("deployment.environment.name", "test")
                 .containsEntry("redis.proxy.dataplane", "go")
+                .containsEntry("redis.proxy.group", "frontend")
                 .containsEntry("redis.proxy.cluster", "redis-a");
         assertThat(service.summary().totals().governanceRejectTotal()).isEqualTo(1.0);
         assertThat(service.summary().totals().keyGovernanceDecisionTotal()).isEqualTo(2.0);
@@ -67,6 +72,7 @@ class ObservabilityServiceTest {
                 .isNotEmpty();
         assertThat(service.prometheus()).contains("redis_proxy_control_plane_slow_query_observed_total");
         assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).status()).isEqualTo("CONVERGED");
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).proxies().getFirst().group()).isEqualTo("frontend");
     }
 
     @Test
@@ -123,6 +129,35 @@ class ObservabilityServiceTest {
     }
 
     @Test
+    void routeConvergenceRequiresSuccessfulApplyResult() throws Exception {
+        routeSnapshotBody = "{\"proxyId\":\"proxy-1\",\"group\":\"frontend\",\"advertiseIp\":\"10.0.0.1\",\"advertisePort\":6379,\"epoch\":2,\"configHash\":\"sha256:abc\",\"lastApplyResult\":\"error\",\"lastApplyTime\":10,\"lastPollTime\":11}";
+        startServer();
+        service = new ObservabilityService(new ObjectMapper());
+        service.register(target("proxy-1", baseUrl(), "go"));
+        service.collectNow("proxy-1");
+
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).status()).isEqualTo("STALE");
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).proxies().getFirst().reason())
+                .contains("last apply result");
+    }
+
+    @Test
+    void expiredHeartbeatMarksTargetUnreachable() throws Exception {
+        startServer();
+        service = new ObservabilityService(new ObjectMapper());
+        ObservabilityTarget target = target("proxy-1", baseUrl(), "go");
+        target.setHeartbeatTtlSeconds(1);
+        target.setRegistrationSource("dataplane");
+        service.register(target);
+        service.collectNow("proxy-1");
+
+        Thread.sleep(1200);
+
+        assertThat(service.routeConvergence(routeStatus(2, "sha256:abc")).status()).isEqualTo("UNREACHABLE");
+        assertThat(service.targets().getFirst().healthy()).isFalse();
+    }
+
+    @Test
     void rejectsInvalidTarget() {
         service = new ObservabilityService(new ObjectMapper());
 
@@ -155,6 +190,30 @@ class ObservabilityServiceTest {
         assertThat(influxWrites.get()).isGreaterThanOrEqualTo(1);
     }
 
+    @Test
+    void routeConvergenceUsesGroupExpectedHash() throws Exception {
+        startServer();
+        service = new ObservabilityService(new ObjectMapper());
+        service.register(target("proxy-1", baseUrl(), "go"));
+        service.collectNow("proxy-1");
+
+        RouteStatus status = new RouteStatus(
+                2,
+                2,
+                2,
+                2,
+                "sha256:default",
+                "redis-a",
+                List.of(),
+                List.of("redis-a"),
+                List.of(
+                        new RouteStatus.GroupRouteStatus("default", 2, 2, "sha256:default", "redis-a", List.of("redis-a"), List.of()),
+                        new RouteStatus.GroupRouteStatus("frontend", 2, 2, "sha256:abc", "redis-a", List.of("redis-a"), List.of())),
+                null);
+
+        assertThat(service.routeConvergence(status).status()).isEqualTo("CONVERGED");
+    }
+
     private void startServer() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/metrics", exchange -> {
@@ -182,7 +241,7 @@ class ObservabilityServiceTest {
             exchange.close();
         });
         server.createContext("/debug/route-snapshot", exchange -> {
-            byte[] body = "{\"proxyId\":\"proxy-1\",\"epoch\":2,\"configHash\":\"sha256:abc\",\"lastApplyResult\":\"success\",\"lastApplyTime\":10,\"lastPollTime\":11}".getBytes(StandardCharsets.UTF_8);
+            byte[] body = routeSnapshotBody.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
@@ -209,6 +268,9 @@ class ObservabilityServiceTest {
     private static ObservabilityTarget target(String proxyId, String adminUrl, String dataplane) {
         ObservabilityTarget target = new ObservabilityTarget();
         target.setProxyId(proxyId);
+        target.setGroup("frontend");
+        target.setAdvertiseIp("10.0.0.1");
+        target.setAdvertisePort(6379);
         target.setAdminUrl(adminUrl);
         target.setDataplane(dataplane);
         target.setCluster("redis-a");
@@ -241,6 +303,16 @@ class ObservabilityServiceTest {
     }
 
     private static RouteStatus routeStatus(long epoch, String hash) {
-        return new RouteStatus(2, epoch, 2, epoch, hash, "redis-a", List.of(), List.of("redis-a"), null);
+        return new RouteStatus(
+                2,
+                epoch,
+                2,
+                epoch,
+                hash,
+                "redis-a",
+                List.of(),
+                List.of("redis-a"),
+                List.of(new RouteStatus.GroupRouteStatus("default", 2, epoch, hash, "redis-a", List.of("redis-a"), List.of())),
+                null);
     }
 }

@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
-	cfg := Config{}
+	cfg := Config{Instance: InstanceConfig{AdvertiseIP: "10.0.0.8"}}
 	applyDefaults(&cfg)
 	if cfg.Routing.ClusterSlotsRefreshIntervalSeconds != 0 {
 		t.Fatalf("clusterSlotsRefreshIntervalSeconds=%d want 0", cfg.Routing.ClusterSlotsRefreshIntervalSeconds)
@@ -16,6 +16,9 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 	}
 	if cfg.Routing.BackendAffinityStrategy != "client" {
 		t.Fatalf("backendAffinityStrategy=%q want client", cfg.Routing.BackendAffinityStrategy)
+	}
+	if cfg.Instance.Group != "default" || cfg.Instance.AdvertisePort != 6379 || cfg.Instance.ProxyID != "default-10-0-0-8-6379" {
+		t.Fatalf("instance defaults=%+v", cfg.Instance)
 	}
 	if !cfg.Analysis.HotKey.IsEnabled() {
 		t.Fatal("hotKey.enabled=false want true by default")
@@ -45,6 +48,28 @@ func TestApplyDefaultsLeavesClusterSlotRefreshIntervalDisabled(t *testing.T) {
 		cfg.Analysis.SlowQuery.MaxTrackedKeys != 10000 ||
 		cfg.Analysis.SlowQuery.DebugTopN != 100 {
 		t.Fatalf("slowQuery defaults=%+v", cfg.Analysis.SlowQuery)
+	}
+}
+
+func TestApplyDefaultsBuildsProxyIDFromGroupIPAndDataPort(t *testing.T) {
+	cfg := Config{
+		Instance: InstanceConfig{Group: "frontend", AdvertiseIP: "10.0.0.1"},
+		Server:   ServerConfig{Listen: "0.0.0.0:6381"},
+	}
+	applyDefaults(&cfg)
+	if cfg.Instance.ProxyID != "frontend-10-0-0-1-6381" {
+		t.Fatalf("proxyId=%q", cfg.Instance.ProxyID)
+	}
+}
+
+func TestApplyDefaultsKeepsExplicitProxyID(t *testing.T) {
+	cfg := Config{
+		Instance: InstanceConfig{ProxyID: "custom-proxy", Group: "frontend", AdvertiseIP: "10.0.0.1"},
+		Server:   ServerConfig{Listen: "0.0.0.0:6381"},
+	}
+	applyDefaults(&cfg)
+	if cfg.Instance.ProxyID != "custom-proxy" {
+		t.Fatalf("proxyId=%q", cfg.Instance.ProxyID)
 	}
 }
 
@@ -126,6 +151,15 @@ func TestValidateGovernance(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsRegistrationWithoutControlPlaneURL(t *testing.T) {
+	cfg := validConfig()
+	cfg.Registration.Enabled = true
+	cfg.Registration.ControlPlaneURL = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected registration control plane url validation error")
+	}
+}
+
 func TestValidateRejectsInvalidHotKeyAnalysis(t *testing.T) {
 	cfg := validConfig()
 	cfg.Analysis.HotKey.WindowSeconds = 60
@@ -161,6 +195,9 @@ func TestSnapshotHashIgnoresLocalRuntimeFields(t *testing.T) {
 	base := SnapshotHash(&cfg)
 
 	cfg.Instance.ProxyID = "proxy-2"
+	cfg.Instance.Group = "frontend"
+	cfg.Instance.AdvertiseIP = "10.0.0.2"
+	cfg.Instance.AdvertisePort = 6381
 	cfg.Server.Listen = "127.0.0.1:9999"
 	cfg.Admin.Listen = "127.0.0.1:19999"
 	cfg.ControlPlane.Enabled = true
@@ -235,9 +272,10 @@ func TestSnapshotHashChangesForBackendAuth(t *testing.T) {
 
 func validConfig() Config {
 	return Config{
-		Server: ServerConfig{Listen: "127.0.0.1:6379"},
-		Admin:  AdminConfig{Listen: "127.0.0.1:8080"},
-		Mode:   "cluster",
+		Instance: InstanceConfig{ProxyID: "proxy-go-1", Group: "default", AdvertiseIP: "127.0.0.1", AdvertisePort: 6379},
+		Server:   ServerConfig{Listen: "127.0.0.1:6379"},
+		Admin:    AdminConfig{Listen: "127.0.0.1:8080"},
+		Mode:     "cluster",
 		Backends: BackendConfig{Clusters: []ClusterConfig{{
 			Name:  "redis-a",
 			Nodes: []string{"127.0.0.1:7000"},

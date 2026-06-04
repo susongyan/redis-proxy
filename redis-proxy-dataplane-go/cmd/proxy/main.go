@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -56,6 +59,7 @@ func main() {
 	defer stop()
 	triggerRefresh := startClusterSlotRefreshLoop(ctx, cfg, manager, pools, reg, log)
 	startControlPlanePolling(ctx, cfg, manager, pools, reg, log, hotKeys, largeKeys, slowQueries)
+	startControlPlaneRegistration(ctx, cfg, reg, log)
 
 	adminServer := admin.NewServer(cfg.Admin.Listen, cfg, manager, pools, reg, hotKeys, largeKeys, slowQueries)
 	go func() {
@@ -76,6 +80,137 @@ func main() {
 	defer cancel()
 	server.Shutdown()
 	_ = adminServer.Shutdown(shutdownCtx)
+}
+
+type registrationPayload struct {
+	ProxyID                   string `json:"proxyId"`
+	Group                     string `json:"group"`
+	AdvertiseIP               string `json:"advertiseIp"`
+	AdvertisePort             int    `json:"advertisePort"`
+	AdminURL                  string `json:"adminUrl"`
+	Dataplane                 string `json:"dataplane"`
+	Cluster                   string `json:"cluster"`
+	PollIntervalSeconds       int    `json:"pollIntervalSeconds"`
+	ServiceNamespace          string `json:"serviceNamespace"`
+	ServiceName               string `json:"serviceName"`
+	ServiceInstanceID         string `json:"serviceInstanceId"`
+	DeploymentEnvironmentName string `json:"deploymentEnvironmentName"`
+	RegistrationSource        string `json:"registrationSource"`
+	HeartbeatTTLSeconds       int    `json:"heartbeatTtlSeconds"`
+}
+
+func startControlPlaneRegistration(ctx context.Context, cfg *config.Config, reg *metrics.Registry, log *zap.Logger) {
+	if !cfg.Registration.Enabled {
+		return
+	}
+	interval := time.Duration(cfg.Registration.HeartbeatIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	go func() {
+		for {
+			result := "success"
+			if err := registerControlPlaneTarget(ctx, client, cfg); err != nil {
+				result = "error"
+				log.Warn("register control plane target", zap.Error(err))
+			} else {
+				reg.RegistrationTime.Set(float64(time.Now().Unix()))
+			}
+			reg.Registration.WithLabelValues(result).Inc()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
+		}
+	}()
+}
+
+func registerControlPlaneTarget(ctx context.Context, client *http.Client, cfg *config.Config) error {
+	endpoint, err := registrationEndpoint(cfg.Registration.ControlPlaneURL)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(registrationPayload{
+		ProxyID:                   cfg.Instance.ProxyID,
+		Group:                     cfg.Instance.Group,
+		AdvertiseIP:               cfg.Instance.AdvertiseIP,
+		AdvertisePort:             cfg.Instance.AdvertisePort,
+		AdminURL:                  registrationAdminURL(cfg),
+		Dataplane:                 defaultString(cfg.Registration.Dataplane, "go"),
+		Cluster:                   defaultString(cfg.Registration.Cluster, cfg.Routing.DefaultCluster),
+		PollIntervalSeconds:       defaultPositive(cfg.Registration.PollIntervalSeconds, 15),
+		ServiceNamespace:          defaultString(cfg.Registration.ServiceNamespace, "redis-proxy"),
+		ServiceName:               defaultString(cfg.Registration.ServiceName, "redis-proxy-dataplane"),
+		ServiceInstanceID:         defaultString(cfg.Registration.ServiceInstanceID, cfg.Instance.ProxyID),
+		DeploymentEnvironmentName: cfg.Registration.DeploymentEnvironmentName,
+		RegistrationSource:        "dataplane",
+		HeartbeatTTLSeconds:       defaultPositive(cfg.Registration.HeartbeatIntervalSeconds*3, 45),
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("control plane registration status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func registrationEndpoint(base string) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, "/config") {
+		path = strings.TrimSuffix(path, "/config")
+	}
+	if strings.HasSuffix(path, "/api/v1") {
+		path += "/observability/targets"
+	} else if !strings.HasSuffix(path, "/observability/targets") {
+		path += "/api/v1/observability/targets"
+	}
+	parsed.Path = path
+	return parsed.String(), nil
+}
+
+func registrationAdminURL(cfg *config.Config) string {
+	if strings.TrimSpace(cfg.Registration.AdminURL) != "" {
+		return strings.TrimSpace(cfg.Registration.AdminURL)
+	}
+	host, port, err := net.SplitHostPort(cfg.Admin.Listen)
+	if err != nil {
+		return "http://127.0.0.1:8080"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func defaultString(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
+}
+
+func defaultPositive(value int, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func refreshClusterSlots(cfg *config.Config, rt *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger) {
@@ -194,7 +329,7 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 			if ctx.Err() != nil {
 				return
 			}
-			retry := watchControlPlane(ctx, client, cfg.ControlPlane.URL, watchTimeout, requestSlack, manager, pools, reg, log, hotKeys, largeKeys, slowQueries)
+			retry := watchControlPlane(ctx, client, cfg, watchTimeout, requestSlack, manager, pools, reg, log, hotKeys, largeKeys, slowQueries)
 			if retry {
 				select {
 				case <-ctx.Done():
@@ -206,9 +341,9 @@ func startControlPlanePolling(ctx context.Context, cfg *config.Config, manager *
 	}()
 }
 
-func watchControlPlane(ctx context.Context, client *http.Client, baseURL string, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) bool {
+func watchControlPlane(ctx context.Context, client *http.Client, cfg *config.Config, watchTimeout time.Duration, requestSlack time.Duration, manager *router.Manager, pools *backend.Pools, reg *metrics.Registry, log *zap.Logger, hotKeys *analysis.HotKeyTracker, largeKeys *analysis.LargeKeyTracker, slowQueries *analysis.SlowQueryTracker) bool {
 	manager.MarkPoll()
-	watchURL, err := controlPlaneWatchURL(baseURL, manager.CurrentEpoch(), watchTimeout)
+	watchURL, err := controlPlaneWatchURL(cfg.ControlPlane.URL, manager.CurrentEpoch(), watchTimeout, cfg.Instance.Group, cfg.Instance.ProxyID)
 	if err != nil {
 		reg.RouteSnapshotUpdates.WithLabelValues("error").Inc()
 		log.Warn("build control plane watch url", zap.Error(err))
@@ -264,7 +399,7 @@ func watchControlPlane(ctx context.Context, client *http.Client, baseURL string,
 	return false
 }
 
-func controlPlaneWatchURL(base string, epoch int64, watchTimeout time.Duration) (string, error) {
+func controlPlaneWatchURL(base string, epoch int64, watchTimeout time.Duration, group string, proxyID string) (string, error) {
 	parsed, err := url.Parse(base)
 	if err != nil {
 		return "", err
@@ -278,6 +413,12 @@ func controlPlaneWatchURL(base string, epoch int64, watchTimeout time.Duration) 
 	}
 	query := parsed.Query()
 	query.Set("epoch", strconv.FormatInt(epoch, 10))
+	if strings.TrimSpace(group) != "" {
+		query.Set("group", strings.TrimSpace(group))
+	}
+	if strings.TrimSpace(proxyID) != "" {
+		query.Set("proxyId", strings.TrimSpace(proxyID))
+	}
 	query.Set("timeoutSeconds", strconv.FormatInt(timeoutSeconds, 10))
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil

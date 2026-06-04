@@ -1,4 +1,9 @@
 proxy:
+  instance:
+    proxyId: ""
+    group: "default"
+    advertiseIp: ""
+    advertisePort: 0
   server:
     listen: "0.0.0.0:6379"
     bossThreads: 1
@@ -24,6 +29,24 @@ proxy:
     defaultCluster: "redis-a"
     routeEpoch: 1
     backendAffinityStrategy: "client"
+  controlPlane:
+    enabled: false
+    url: "http://127.0.0.1:8090/api/v1/config"
+    pollIntervalSeconds: 5
+    watchTimeoutSeconds: 30
+    requestTimeoutMillis: 1000
+  registration:
+    enabled: false
+    controlPlaneUrl: "http://127.0.0.1:8090/api/v1"
+    adminUrl: "http://127.0.0.1:8080"
+    dataplane: "java"
+    cluster: "redis-a"
+    heartbeatIntervalSeconds: 15
+    pollIntervalSeconds: 15
+    serviceNamespace: "redis-proxy"
+    serviceName: "redis-proxy-dataplane"
+    serviceInstanceId: ""
+    deploymentEnvironmentName: ""
   limits:
     maxPipelineDepth: 1024
     pipelineFlushBatchSize: 16

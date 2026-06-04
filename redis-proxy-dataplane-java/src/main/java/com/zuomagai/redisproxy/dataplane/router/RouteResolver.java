@@ -241,6 +241,9 @@ public class RouteResolver {
         Snapshot current = snapshot.get();
         return new SnapshotInfo(
                 current.properties().getInstance().getProxyId(),
+                current.properties().getInstance().getGroup(),
+                current.properties().getInstance().getAdvertiseIp(),
+                current.properties().getInstance().getAdvertisePort(),
                 current.properties().getRouting().getRouteEpoch(),
                 RouteConfigHash.hash(current.properties()),
                 lastApplyResult,
@@ -427,7 +430,7 @@ public class RouteResolver {
     }
 
     public record RouteDecision(String address, String cluster, String rule, long epoch) {}
-    public record SnapshotInfo(String proxyId, long epoch, String configHash, String lastApplyResult, long lastApplyTime, long lastPollTime, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules, Map<String, Object> governance) {}
+    public record SnapshotInfo(String proxyId, String group, String advertiseIp, int advertisePort, long epoch, String configHash, String lastApplyResult, long lastApplyTime, long lastPollTime, String mode, String defaultCluster, List<String> routeClusters, List<ProxyProperties.RouteRule> rules, Map<String, Object> governance) {}
     public record ApplyResult(String result, boolean applied, String error) {}
     private record Snapshot(ProxyProperties properties, Map<String, ProxyProperties.Cluster> clusters) {}
     private record SelectedCluster(String cluster, String rule) {}

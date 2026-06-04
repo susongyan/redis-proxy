@@ -22,6 +22,7 @@ var clusterSlotsCommand = []byte("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n")
 
 type Router struct {
 	proxyID         string
+	instance        config.InstanceConfig
 	configHash      string
 	lastApplyResult atomic.Value
 	lastApplyTime   atomic.Int64
@@ -47,6 +48,9 @@ type Decision struct {
 
 type SnapshotInfo struct {
 	ProxyID         string                   `json:"proxyId"`
+	Group           string                   `json:"group"`
+	AdvertiseIP     string                   `json:"advertiseIp"`
+	AdvertisePort   int                      `json:"advertisePort"`
 	Epoch           int64                    `json:"epoch"`
 	ConfigHash      string                   `json:"configHash"`
 	LastApplyResult string                   `json:"lastApplyResult"`
@@ -69,6 +73,10 @@ type clusterState struct {
 }
 
 func New(cfg *config.Config) (*Router, error) {
+	config.ApplyDefaults(cfg)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	clusters := make(map[string]config.ClusterConfig, len(cfg.Backends.Clusters))
 	states := make(map[string]*clusterState, len(cfg.Backends.Clusters))
 	for _, cluster := range cfg.Backends.Clusters {
@@ -80,6 +88,7 @@ func New(cfg *config.Config) (*Router, error) {
 	}
 	rt := &Router{
 		proxyID:         cfg.Instance.ProxyID,
+		instance:        cfg.Instance,
 		configHash:      config.SnapshotHash(cfg),
 		mode:            cfg.Mode,
 		epoch:           cfg.Routing.RouteEpoch,
@@ -194,7 +203,7 @@ func (m *Manager) ClusterSlotOwners(clusterName string) []string {
 
 func (m *Manager) ApplyConfig(cfg *config.Config, pools *backend.Pools) (string, error) {
 	config.ApplyDefaults(cfg)
-	cfg.Instance.ProxyID = m.Current().proxyID
+	cfg.Instance = m.Current().instance
 	if err := cfg.Validate(); err != nil {
 		m.RecordApplyResult("invalid")
 		return "invalid", err
@@ -545,6 +554,9 @@ func (r *Router) SnapshotInfo() SnapshotInfo {
 	lastApplyResult, _ := r.lastApplyResult.Load().(string)
 	return SnapshotInfo{
 		ProxyID:         r.proxyID,
+		Group:           r.instance.Group,
+		AdvertiseIP:     r.instance.AdvertiseIP,
+		AdvertisePort:   r.instance.AdvertisePort,
 		Epoch:           r.epoch,
 		ConfigHash:      r.configHash,
 		LastApplyResult: lastApplyResult,

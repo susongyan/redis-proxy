@@ -3,8 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
-	"runtime"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -19,12 +20,16 @@ type Config struct {
 	Routing      RoutingConfig      `yaml:"routing" json:"routing"`
 	Limits       LimitsConfig       `yaml:"limits" json:"limits"`
 	ControlPlane ControlPlaneConfig `yaml:"controlPlane" json:"controlPlane"`
+	Registration RegistrationConfig `yaml:"registration" json:"registration"`
 	Analysis     AnalysisConfig     `yaml:"analysis" json:"analysis"`
 	Governance   GovernanceConfig   `yaml:"governance" json:"governance"`
 }
 
 type InstanceConfig struct {
-	ProxyID string `yaml:"proxyId" json:"proxyId"`
+	ProxyID       string `yaml:"proxyId" json:"proxyId"`
+	Group         string `yaml:"group" json:"group"`
+	AdvertiseIP   string `yaml:"advertiseIp" json:"advertiseIp"`
+	AdvertisePort int    `yaml:"advertisePort" json:"advertisePort"`
 }
 
 type ServerConfig struct {
@@ -127,6 +132,20 @@ type ControlPlaneConfig struct {
 	RequestTimeoutMillis int    `yaml:"requestTimeoutMillis" json:"requestTimeoutMillis"`
 }
 
+type RegistrationConfig struct {
+	Enabled                   bool   `yaml:"enabled" json:"enabled"`
+	ControlPlaneURL           string `yaml:"controlPlaneUrl" json:"controlPlaneUrl"`
+	AdminURL                  string `yaml:"adminUrl" json:"adminUrl"`
+	Dataplane                 string `yaml:"dataplane" json:"dataplane"`
+	Cluster                   string `yaml:"cluster" json:"cluster"`
+	HeartbeatIntervalSeconds  int    `yaml:"heartbeatIntervalSeconds" json:"heartbeatIntervalSeconds"`
+	PollIntervalSeconds       int    `yaml:"pollIntervalSeconds" json:"pollIntervalSeconds"`
+	ServiceNamespace          string `yaml:"serviceNamespace" json:"serviceNamespace"`
+	ServiceName               string `yaml:"serviceName" json:"serviceName"`
+	ServiceInstanceID         string `yaml:"serviceInstanceId" json:"serviceInstanceId"`
+	DeploymentEnvironmentName string `yaml:"deploymentEnvironmentName" json:"deploymentEnvironmentName"`
+}
+
 type GovernanceConfig struct {
 	Enabled              bool                `yaml:"enabled" json:"enabled"`
 	RequireAuth          bool                `yaml:"requireAuth" json:"requireAuth"`
@@ -186,19 +205,13 @@ func ApplyDefaults(cfg *Config) {
 }
 
 func applyDefaults(cfg *Config) {
-	if cfg.Instance.ProxyID == "" {
-		if host, err := os.Hostname(); err == nil && host != "" {
-			cfg.Instance.ProxyID = host
-		} else {
-			cfg.Instance.ProxyID = "proxy-" + runtime.GOOS
-		}
-	}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = "0.0.0.0:6379"
 	}
 	if cfg.Admin.Listen == "" {
 		cfg.Admin.Listen = "0.0.0.0:8080"
 	}
+	applyInstanceDefaults(cfg)
 	if cfg.Mode == "" {
 		cfg.Mode = "standalone"
 	}
@@ -261,6 +274,21 @@ func (c *Config) Validate() error {
 	if c.Server.Listen == "" || c.Admin.Listen == "" {
 		return errors.New("server.listen and admin.listen are required")
 	}
+	if _, err := listenPort(c.Server.Listen); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Instance.Group) == "" {
+		return errors.New("instance.group is required")
+	}
+	if strings.TrimSpace(c.Instance.AdvertiseIP) == "" {
+		return errors.New("instance.advertiseIp is required")
+	}
+	if c.Instance.AdvertisePort <= 0 {
+		return errors.New("instance.advertisePort must be positive")
+	}
+	if strings.TrimSpace(c.Instance.ProxyID) == "" {
+		return errors.New("instance.proxyId is required")
+	}
 	if c.Mode != "standalone" && c.Mode != "cluster" {
 		return fmt.Errorf("unsupported mode %q", c.Mode)
 	}
@@ -284,6 +312,15 @@ func (c *Config) Validate() error {
 	}
 	if c.ControlPlane.RequestTimeoutMillis < 0 {
 		return errors.New("controlPlane.requestTimeoutMillis must be >= 0")
+	}
+	if c.Registration.Enabled && strings.TrimSpace(c.Registration.ControlPlaneURL) == "" {
+		return errors.New("registration.controlPlaneUrl is required when registration.enabled=true")
+	}
+	if c.Registration.HeartbeatIntervalSeconds < 0 {
+		return errors.New("registration.heartbeatIntervalSeconds must be >= 0")
+	}
+	if c.Registration.PollIntervalSeconds < 0 {
+		return errors.New("registration.pollIntervalSeconds must be >= 0")
 	}
 	if c.Limits.MaxPipelineDepth <= 0 || c.Limits.PipelineFlushBatchSize <= 0 || c.Limits.PipelineFlushMaxDelayMillis < 0 || c.Limits.MaxRequestBytes <= 0 || c.Limits.MaxResponseBytes <= 0 || c.Limits.LargeResponseBytes < 0 {
 		return errors.New("limits must be positive, pipelineFlushMaxDelayMillis must be >= 0 and largeResponseBytes must be >= 0")
@@ -345,6 +382,96 @@ func (c *Config) Validate() error {
 
 func validBackendAffinityStrategy(strategy string) bool {
 	return strategy == "client" || strategy == "keySlot" || strategy == "hashTag"
+}
+
+func applyInstanceDefaults(cfg *Config) {
+	if strings.TrimSpace(cfg.Instance.Group) == "" {
+		cfg.Instance.Group = "default"
+	}
+	if strings.TrimSpace(cfg.Instance.AdvertiseIP) == "" {
+		cfg.Instance.AdvertiseIP = detectAdvertiseIP()
+	}
+	if cfg.Instance.AdvertisePort == 0 {
+		if port, err := listenPort(cfg.Server.Listen); err == nil {
+			cfg.Instance.AdvertisePort = port
+		}
+	}
+	if strings.TrimSpace(cfg.Instance.ProxyID) == "" && cfg.Instance.AdvertisePort > 0 {
+		cfg.Instance.ProxyID = buildProxyID(cfg.Instance.Group, cfg.Instance.AdvertiseIP, cfg.Instance.AdvertisePort)
+	}
+}
+
+func listenPort(listen string) (int, error) {
+	_, portText, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil {
+		return 0, fmt.Errorf("server.listen must be host:port: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		return 0, fmt.Errorf("server.listen port must be positive: %q", portText)
+	}
+	return port, nil
+}
+
+func buildProxyID(group, advertiseIP string, advertisePort int) string {
+	return sanitizeProxyIDPart(group) + "-" + sanitizeProxyIDPart(advertiseIP) + "-" + strconv.Itoa(advertisePort)
+}
+
+func sanitizeProxyIDPart(value string) string {
+	value = strings.TrimSpace(value)
+	var builder strings.Builder
+	lastDash := false
+	for _, ch := range value {
+		valid := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+		if valid {
+			builder.WriteRune(ch)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(builder.String(), "-")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
+func detectAdvertiseIP() string {
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, addrErr := iface.Addrs()
+			if addrErr != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch value := addr.(type) {
+				case *net.IPNet:
+					ip = value.IP
+				case *net.IPAddr:
+					ip = value.IP
+				}
+				if ip == nil || ip.IsLoopback() {
+					continue
+				}
+				if v4 := ip.To4(); v4 != nil {
+					return v4.String()
+				}
+			}
+		}
+	}
+	if host, err := os.Hostname(); err == nil && strings.TrimSpace(host) != "" {
+		return strings.TrimSpace(host)
+	}
+	return "127.0.0.1"
 }
 
 func applyAnalysisDefaults(analysis *AnalysisConfig) {

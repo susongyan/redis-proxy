@@ -26,6 +26,9 @@ final class MemoryObservabilityTargetRepository implements ObservabilityTargetRe
     private static ObservabilityTarget copyTarget(ObservabilityTarget source) {
         ObservabilityTarget target = new ObservabilityTarget();
         target.setProxyId(source.getProxyId());
+        target.setGroup(source.getGroup());
+        target.setAdvertiseIp(source.getAdvertiseIp());
+        target.setAdvertisePort(source.getAdvertisePort());
         target.setAdminUrl(source.getAdminUrl());
         target.setDataplane(source.getDataplane());
         target.setCluster(source.getCluster());
@@ -34,6 +37,9 @@ final class MemoryObservabilityTargetRepository implements ObservabilityTargetRe
         target.setServiceName(source.getServiceName());
         target.setServiceInstanceId(source.getServiceInstanceId());
         target.setDeploymentEnvironmentName(source.getDeploymentEnvironmentName());
+        target.setRegistrationSource(source.getRegistrationSource());
+        target.setLastHeartbeatAt(source.getLastHeartbeatAt());
+        target.setHeartbeatTtlSeconds(source.getHeartbeatTtlSeconds());
         return target;
     }
 }

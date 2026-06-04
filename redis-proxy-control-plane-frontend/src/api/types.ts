@@ -7,6 +7,7 @@ export interface ProxyConfig {
   limits?: Limits;
   analysis?: Analysis;
   governance?: Governance;
+  proxyGroups?: ProxyGroup[];
   [key: string]: unknown;
 }
 
@@ -110,6 +111,15 @@ export interface KeyRule {
   maxQps?: number;
 }
 
+export interface ProxyGroup {
+  name: string;
+  enabledClusters: string[];
+  routing?: Routing;
+  limits?: Limits;
+  analysis?: Analysis;
+  governance?: Governance;
+}
+
 export interface ConfigVersion {
   versionId: number;
   publishedAt: string;
@@ -137,7 +147,18 @@ export interface RouteStatus {
   defaultCluster: string;
   rules: RouteRule[];
   clusters: string[];
+  groups?: GroupRouteStatus[];
   lastPublished?: ConfigVersion;
+}
+
+export interface GroupRouteStatus {
+  group: string;
+  expectedVersionId: number;
+  expectedRouteEpoch: number;
+  expectedConfigHash: string;
+  defaultCluster: string;
+  clusters: string[];
+  rules: RouteRule[];
 }
 
 export interface RouteConvergence {
@@ -155,6 +176,9 @@ export interface RouteConvergence {
 
 export interface RouteConvergenceInstance {
   proxyId: string;
+  group?: string;
+  advertiseIp?: string;
+  advertisePort?: number;
   dataplane: string;
   adminUrl: string;
   healthy: boolean;
@@ -195,14 +219,20 @@ export interface PublishedStep {
 
 export interface ObservabilityTarget {
   proxyId: string;
+  group?: string;
+  advertiseIp?: string;
+  advertisePort?: number;
   adminUrl: string;
   dataplane: string;
   cluster?: string;
   pollIntervalSeconds?: number;
+  registrationSource?: string;
+  heartbeatTtlSeconds?: number;
   resourceAttributes?: Record<string, string>;
 }
 
 export interface TargetStatus extends ObservabilityTarget {
+  lastHeartbeatAt?: string;
   healthy: boolean;
   lastCollectedAt?: string;
   lastError?: string;

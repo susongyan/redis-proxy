@@ -128,10 +128,15 @@ public class RouteSnapshotPoller {
     }
 
     String controlPlaneWatchUrl(long routeEpoch, Duration watchTimeout) {
-        return controlPlaneWatchUrl(properties.getControlPlane().getUrl(), routeEpoch, watchTimeout);
+        return controlPlaneWatchUrl(
+                properties.getControlPlane().getUrl(),
+                routeEpoch,
+                watchTimeout,
+                properties.getInstance().getGroup(),
+                properties.getInstance().getProxyId());
     }
 
-    static String controlPlaneWatchUrl(String base, long routeEpoch, Duration watchTimeout) {
+    static String controlPlaneWatchUrl(String base, long routeEpoch, Duration watchTimeout, String group, String proxyId) {
         String path = base;
         int queryIndex = base.indexOf('?');
         String basePath = queryIndex >= 0 ? base.substring(0, queryIndex) : base;
@@ -144,7 +149,13 @@ public class RouteSnapshotPoller {
         long timeoutSeconds = Math.max(1, watchTimeout.toSeconds());
         return path + separator
                 + "epoch=" + URLEncoder.encode(Long.toString(routeEpoch), StandardCharsets.UTF_8)
+                + "&group=" + URLEncoder.encode(blankDefault(group, "default"), StandardCharsets.UTF_8)
+                + "&proxyId=" + URLEncoder.encode(blankDefault(proxyId, ""), StandardCharsets.UTF_8)
                 + "&timeoutSeconds=" + URLEncoder.encode(Long.toString(timeoutSeconds), StandardCharsets.UTF_8);
+    }
+
+    private static String blankDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 
     private static String stripTrailingSlashes(String value) {

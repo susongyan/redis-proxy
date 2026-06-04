@@ -2,6 +2,7 @@
 import * as echarts from 'echarts';
 import { Refresh } from '@element-plus/icons-vue';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import ConvergenceStatusHelp from '../components/ConvergenceStatusHelp.vue';
 import MetricStrip from '../components/MetricStrip.vue';
 import StatusTag from '../components/StatusTag.vue';
 import { useControlPlaneStore } from '../stores/controlPlane';
@@ -97,7 +98,10 @@ watch(() => store.summary, () => nextTick(renderChart), { deep: true });
     <section class="grid-2 section">
       <div class="panel dark-panel">
         <div class="panel-header">
-          <h2>路由期望态</h2>
+          <div class="title-with-help">
+            <h2>路由期望态</h2>
+            <ConvergenceStatusHelp />
+          </div>
           <StatusTag :label="store.convergence?.status" :type="convergenceTone(store.convergence?.status)" />
         </div>
         <div class="panel-body">
@@ -109,9 +113,13 @@ watch(() => store.summary, () => nextTick(renderChart), { deep: true });
           </el-descriptions>
           <el-table :data="store.convergence?.proxies || []" size="small" style="margin-top: 14px">
             <el-table-column prop="proxyId" label="proxyId" />
+            <el-table-column prop="group" label="group" width="110" />
             <el-table-column prop="dataplane" label="data plane" width="110" />
             <el-table-column prop="epoch" label="epoch" width="90" />
-            <el-table-column label="status" width="120">
+            <el-table-column width="120">
+              <template #header>
+                <span class="column-header-help">status <ConvergenceStatusHelp /></span>
+              </template>
               <template #default="{ row }"><StatusTag :label="row.status" :type="convergenceTone(row.status)" /></template>
             </el-table-column>
           </el-table>

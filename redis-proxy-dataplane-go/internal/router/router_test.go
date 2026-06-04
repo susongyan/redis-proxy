@@ -251,6 +251,9 @@ func TestRouteRuleSelectsClusterByNamespacePatternAndHashTag(t *testing.T) {
 func TestSnapshotInfoIncludesConvergenceFields(t *testing.T) {
 	cfg := managerTestConfig("127.0.0.1:6379", 1, nil)
 	cfg.Instance.ProxyID = "proxy-go-1"
+	cfg.Instance.Group = "frontend"
+	cfg.Instance.AdvertiseIP = "10.0.0.1"
+	cfg.Instance.AdvertisePort = 6379
 	manager, err := NewManager(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -258,6 +261,9 @@ func TestSnapshotInfoIncludesConvergenceFields(t *testing.T) {
 	info := manager.SnapshotInfo()
 	if info.ProxyID != "proxy-go-1" {
 		t.Fatalf("proxyId=%q", info.ProxyID)
+	}
+	if info.Group != "frontend" || info.AdvertiseIP != "10.0.0.1" || info.AdvertisePort != 6379 {
+		t.Fatalf("instance info=%+v", info)
 	}
 	if info.ConfigHash == "" {
 		t.Fatal("configHash is empty")
@@ -311,6 +317,10 @@ func TestManagerApplyConfigAcceptsHigherEpochAndRejectsStale(t *testing.T) {
 	if manager.CurrentEpoch() != 2 {
 		t.Fatalf("epoch=%d want 2", manager.CurrentEpoch())
 	}
+	info := manager.SnapshotInfo()
+	if info.ProxyID != base.Instance.ProxyID || info.Group != base.Instance.Group || info.AdvertiseIP != base.Instance.AdvertiseIP || info.AdvertisePort != base.Instance.AdvertisePort {
+		t.Fatalf("hot reload did not preserve local instance: %+v base=%+v", info, base.Instance)
+	}
 	decision, err := manager.RouteDecision(protocolRequest("GET", "user:1"))
 	if err != nil {
 		t.Fatal(err)
@@ -335,9 +345,10 @@ func acceptLoop(ln net.Listener) {
 
 func managerTestConfig(addr string, epoch int64, rules []config.RouteRuleConfig) *config.Config {
 	return &config.Config{
-		Server: config.ServerConfig{Listen: "127.0.0.1:6379"},
-		Admin:  config.AdminConfig{Listen: "127.0.0.1:8080"},
-		Mode:   "standalone",
+		Instance: config.InstanceConfig{Group: "frontend", AdvertiseIP: "10.0.0.1"},
+		Server:   config.ServerConfig{Listen: "127.0.0.1:6379"},
+		Admin:    config.AdminConfig{Listen: "127.0.0.1:8080"},
+		Mode:     "standalone",
 		Backends: config.BackendConfig{Clusters: []config.ClusterConfig{
 			{Name: "redis-a", Nodes: []string{addr}},
 			{Name: "redis-b", Nodes: []string{addr}},

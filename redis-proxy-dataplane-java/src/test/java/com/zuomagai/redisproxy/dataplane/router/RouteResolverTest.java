@@ -123,6 +123,43 @@ class RouteResolverTest {
     }
 
     @Test
+    void registrationRequiresControlPlaneUrlWhenEnabled() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        properties.getRegistration().setEnabled(true);
+        properties.getRegistration().setControlPlaneUrl("");
+
+        assertThatThrownBy(properties::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("registration.controlPlaneUrl");
+    }
+
+    @Test
+    void proxyIdDefaultsToGroupIpAndDataPort() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        properties.getInstance().setGroup("frontend");
+        properties.getInstance().setAdvertiseIp("10.0.0.1");
+        properties.getServer().setListen("0.0.0.0:6381");
+
+        properties.validate();
+
+        assertThat(properties.getInstance().getProxyId()).isEqualTo("frontend-10-0-0-1-6381");
+        assertThat(properties.getInstance().getAdvertisePort()).isEqualTo(6381);
+    }
+
+    @Test
+    void explicitProxyIdIsKept() {
+        ProxyProperties properties = properties("127.0.0.1:6379");
+        properties.getInstance().setProxyId("custom-proxy");
+        properties.getInstance().setGroup("frontend");
+        properties.getInstance().setAdvertiseIp("10.0.0.1");
+        properties.getServer().setListen("0.0.0.0:6381");
+
+        properties.validate();
+
+        assertThat(properties.getInstance().getProxyId()).isEqualTo("custom-proxy");
+    }
+
+    @Test
     void routeRuleSelectsClusterByNamespacePatternAndHashTag() {
         ProxyProperties properties = properties("127.0.0.1:6379");
         ProxyProperties.Cluster redisB = new ProxyProperties.Cluster();
@@ -159,7 +196,8 @@ class RouteResolverTest {
     @Test
     void applyConfigAcceptsHigherEpochAndRejectsStale() {
         ProxyProperties properties = properties("127.0.0.1:6379");
-        properties.getInstance().setProxyId("proxy-java-1");
+        properties.getInstance().setGroup("frontend");
+        properties.getInstance().setAdvertiseIp("10.0.0.2");
         RouteResolver resolver = new RouteResolver(properties, new SimpleMeterRegistry());
         BackendPool backendPool = mock(BackendPool.class);
 
@@ -188,7 +226,10 @@ class RouteResolverTest {
         assertThat(resolver.currentEpoch()).isEqualTo(2);
         assertThat(resolver.routeDecision(request("GET", "user:1")).cluster()).isEqualTo("redis-b");
         assertThat(resolver.limits().getLargeResponseBytes()).isEqualTo(2048);
-        assertThat(resolver.snapshotInfo().proxyId()).isEqualTo("proxy-java-1");
+        assertThat(resolver.snapshotInfo().proxyId()).isEqualTo("frontend-10-0-0-2-6379");
+        assertThat(resolver.snapshotInfo().group()).isEqualTo("frontend");
+        assertThat(resolver.snapshotInfo().advertiseIp()).isEqualTo("10.0.0.2");
+        assertThat(resolver.snapshotInfo().advertisePort()).isEqualTo(6379);
         assertThat(resolver.snapshotInfo().configHash()).startsWith("sha256:");
         assertThat(resolver.snapshotInfo().lastApplyResult()).isEqualTo("success");
         verify(backendPool).ensureCluster(next.getBackends().getClusters().get(1));
@@ -201,6 +242,9 @@ class RouteResolverTest {
         String base = RouteConfigHash.hash(properties);
 
         properties.getInstance().setProxyId("other");
+        properties.getInstance().setGroup("frontend");
+        properties.getInstance().setAdvertiseIp("10.0.0.2");
+        properties.getInstance().setAdvertisePort(6381);
         properties.getServer().setListen("0.0.0.0:9999");
         properties.getAdmin().setListen("0.0.0.0:19999");
         properties.getControlPlane().setEnabled(true);
@@ -236,6 +280,8 @@ class RouteResolverTest {
 
     private static ProxyProperties properties(String... nodes) {
         ProxyProperties properties = new ProxyProperties();
+        properties.getInstance().setGroup("default");
+        properties.getInstance().setAdvertiseIp("127.0.0.1");
         properties.setMode("cluster");
         ProxyProperties.Cluster cluster = new ProxyProperties.Cluster();
         cluster.setName("redis-a");

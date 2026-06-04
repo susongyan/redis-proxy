@@ -162,7 +162,7 @@ class ConfigServiceTest {
         config.getRouting().setRouteEpoch(2);
         service.update(config);
 
-        Optional<ProxyConfig> watched = service.watch(1, Duration.ofSeconds(1)).get(1, TimeUnit.SECONDS);
+        Optional<ProxyConfig> watched = service.watch(1, "default", Duration.ofSeconds(1)).get(1, TimeUnit.SECONDS);
 
         assertThat(watched).isPresent();
         assertThat(watched.get().getRouting().getRouteEpoch()).isEqualTo(2);
@@ -171,7 +171,7 @@ class ConfigServiceTest {
     @Test
     void watchCompletesWhenHigherEpochIsPublished() throws Exception {
         ConfigService service = new ConfigService();
-        CompletableFuture<Optional<ProxyConfig>> watch = service.watch(1, Duration.ofSeconds(5));
+        CompletableFuture<Optional<ProxyConfig>> watch = service.watch(1, "default", Duration.ofSeconds(5));
         assertThat(watch).isNotDone();
 
         ProxyConfig config = service.get();
@@ -186,9 +186,87 @@ class ConfigServiceTest {
     void watchTimesOutWhenEpochDoesNotAdvance() throws Exception {
         ConfigService service = new ConfigService();
 
-        Optional<ProxyConfig> watched = service.watch(1, Duration.ofMillis(20)).get(1, TimeUnit.SECONDS);
+        Optional<ProxyConfig> watched = service.watch(1, "default", Duration.ofMillis(20)).get(1, TimeUnit.SECONDS);
 
         assertThat(watched).isEmpty();
+    }
+
+    @Test
+    void derivesGroupScopedSnapshots() throws Exception {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        ProxyConfig.Cluster redisB = new ProxyConfig.Cluster();
+        redisB.setName("redis-b");
+        redisB.setNodes(List.of("127.0.0.1:6380"));
+        config.getBackends().setClusters(List.of(config.getBackends().getClusters().getFirst(), redisB));
+        ProxyConfig.Namespace namespace = new ProxyConfig.Namespace();
+        namespace.setName("app-a");
+        namespace.setToken("token-a");
+        config.getGovernance().setNamespaces(List.of(namespace));
+
+        ProxyConfig.ProxyGroup frontend = new ProxyConfig.ProxyGroup();
+        frontend.setName("frontend");
+        frontend.setEnabledClusters(List.of("redis-a"));
+        ProxyConfig.Routing frontendRouting = new ProxyConfig.Routing();
+        frontendRouting.setDefaultCluster("redis-a");
+        frontend.setRouting(frontendRouting);
+
+        ProxyConfig.ProxyGroup payment = new ProxyConfig.ProxyGroup();
+        payment.setName("payment");
+        payment.setEnabledClusters(List.of("redis-b"));
+        ProxyConfig.Routing paymentRouting = new ProxyConfig.Routing();
+        paymentRouting.setDefaultCluster("redis-b");
+        ProxyConfig.RouteRule paymentRule = new ProxyConfig.RouteRule();
+        paymentRule.setName("app-a-payment");
+        paymentRule.setNamespace("app-a");
+        paymentRule.setCluster("redis-b");
+        paymentRule.setTrafficPercent(100);
+        paymentRouting.setRules(List.of(paymentRule));
+        payment.setRouting(paymentRouting);
+        config.setProxyGroups(List.of(frontend, payment));
+
+        service.update(config);
+
+        ProxyConfig frontendSnapshot = service.snapshotForGroup("frontend");
+        ProxyConfig paymentSnapshot = service.snapshotForGroup("payment");
+        assertThat(frontendSnapshot.getBackends().getClusters()).extracting("name").containsExactly("redis-a");
+        assertThat(paymentSnapshot.getBackends().getClusters()).extracting("name").containsExactly("redis-b");
+        assertThat(paymentSnapshot.getRouting().getDefaultCluster()).isEqualTo("redis-b");
+        assertThat(paymentSnapshot.getRouting().getRules()).hasSize(1);
+        assertThat(paymentSnapshot.getProxyGroups()).isEmpty();
+        assertThat(service.watch(0, "payment", Duration.ofSeconds(1)).get(1, TimeUnit.SECONDS))
+                .get()
+                .extracting(snapshot -> snapshot.getBackends().getClusters().getFirst().getName())
+                .isEqualTo("redis-b");
+        assertThat(service.routeStatus().groups()).extracting("group").containsExactly("frontend", "payment");
+        assertThat(service.routeStatus().groups()).extracting("expectedConfigHash").doesNotHaveDuplicates();
+    }
+
+    @Test
+    void rejectsProxyGroupRuleOutsideEnabledClusters() {
+        ConfigService service = new ConfigService();
+        ProxyConfig config = service.get();
+        ProxyConfig.Cluster redisB = new ProxyConfig.Cluster();
+        redisB.setName("redis-b");
+        redisB.setNodes(List.of("127.0.0.1:6380"));
+        config.getBackends().setClusters(List.of(config.getBackends().getClusters().getFirst(), redisB));
+        ProxyConfig.ProxyGroup group = new ProxyConfig.ProxyGroup();
+        group.setName("frontend");
+        group.setEnabledClusters(List.of("redis-a"));
+        ProxyConfig.Routing routing = new ProxyConfig.Routing();
+        routing.setDefaultCluster("redis-a");
+        ProxyConfig.RouteRule rule = new ProxyConfig.RouteRule();
+        rule.setName("bad");
+        rule.setCluster("redis-b");
+        rule.setKeyPrefix("user:");
+        rule.setTrafficPercent(100);
+        routing.setRules(List.of(rule));
+        group.setRouting(routing);
+        config.setProxyGroups(List.of(group));
+
+        assertThatThrownBy(() -> service.update(config))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be in enabledClusters");
     }
 
     @Test
@@ -219,7 +297,7 @@ class ConfigServiceTest {
     void rollbackCopiesHistoricalContentWithHigherEpochAndWakesWatcher() throws Exception {
         ConfigService service = new ConfigService();
         ProxyConfig original = service.get();
-        CompletableFuture<Optional<ProxyConfig>> watch = service.watch(2, Duration.ofSeconds(5));
+        CompletableFuture<Optional<ProxyConfig>> watch = service.watch(2, "default", Duration.ofSeconds(5));
 
         ProxyConfig next = service.get();
         ProxyConfig.Cluster gray = new ProxyConfig.Cluster();

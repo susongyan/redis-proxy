@@ -35,6 +35,8 @@ type Registry struct {
 	RouteSnapshotUpdates   *prometheus.CounterVec
 	RouteSnapshotRejects   *prometheus.CounterVec
 	RouteSnapshotTime      prometheus.Gauge
+	Registration           *prometheus.CounterVec
+	RegistrationTime       prometheus.Gauge
 	SlotRefreshes          *prometheus.CounterVec
 	SlotRefreshTime        prometheus.Gauge
 	BackendReconnects      *prometheus.CounterVec
@@ -104,6 +106,8 @@ func NewRegistry() *Registry {
 	r.RouteSnapshotUpdates = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_route_snapshot_update_total", Help: "Route snapshot update attempts by result"}, []string{"result"})
 	r.RouteSnapshotRejects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_route_snapshot_rejected_total", Help: "Rejected route snapshots by reason"}, []string{"reason"})
 	r.RouteSnapshotTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_route_snapshot_last_success_timestamp_seconds", Help: "Unix timestamp of the last successful route snapshot update"})
+	r.Registration = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_control_plane_registration_total", Help: "Control plane registration attempts by result"}, []string{"result"})
+	r.RegistrationTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_control_plane_registration_last_success_timestamp_seconds", Help: "Unix timestamp of the last successful control plane registration"})
 	r.SlotRefreshes = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_cluster_slot_refresh_total", Help: "Cluster slot refresh attempts by result"}, []string{"result"})
 	r.SlotRefreshTime = prometheus.NewGauge(prometheus.GaugeOpts{Name: "redis_proxy_cluster_slot_last_refresh_timestamp_seconds", Help: "Unix timestamp of the last successful cluster slot refresh"})
 	r.BackendReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "redis_proxy_backend_reconnect_total", Help: "Backend reconnect attempts by Redis node and result"}, []string{"node", "result"})
@@ -166,6 +170,8 @@ func NewRegistry() *Registry {
 		r.RouteSnapshotUpdates,
 		r.RouteSnapshotRejects,
 		r.RouteSnapshotTime,
+		r.Registration,
+		r.RegistrationTime,
 		r.SlotRefreshes,
 		r.SlotRefreshTime,
 		r.BackendReconnects,

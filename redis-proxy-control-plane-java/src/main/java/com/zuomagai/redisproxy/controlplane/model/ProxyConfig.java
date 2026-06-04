@@ -17,6 +17,7 @@ public class ProxyConfig {
     @Valid private Limits limits = new Limits();
     @Valid private Analysis analysis = new Analysis();
     @Valid private Governance governance = new Governance();
+    @Valid private List<ProxyGroup> proxyGroups = new ArrayList<>();
 
     public Server getServer() { return server; }
     public void setServer(Server server) { this.server = server; }
@@ -34,6 +35,8 @@ public class ProxyConfig {
     public void setAnalysis(Analysis analysis) { this.analysis = analysis; }
     public Governance getGovernance() { return governance; }
     public void setGovernance(Governance governance) { this.governance = governance; }
+    public List<ProxyGroup> getProxyGroups() { return proxyGroups; }
+    public void setProxyGroups(List<ProxyGroup> proxyGroups) { this.proxyGroups = proxyGroups == null ? new ArrayList<>() : proxyGroups; }
 
     public static class Server {
         @NotBlank private String listen = "0.0.0.0:6379";
@@ -359,6 +362,27 @@ public class ProxyConfig {
         public void setDisabled(boolean disabled) { this.disabled = disabled; }
         public int getMaxQps() { return maxQps; }
         public void setMaxQps(int maxQps) { this.maxQps = maxQps; }
+    }
+
+    public static class ProxyGroup {
+        @NotBlank private String name;
+        private List<String> enabledClusters = new ArrayList<>();
+        @Valid private Routing routing;
+        @Valid private Limits limits;
+        @Valid private Analysis analysis;
+        @Valid private Governance governance;
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
+        public List<String> getEnabledClusters() { return enabledClusters; }
+        public void setEnabledClusters(List<String> enabledClusters) { this.enabledClusters = enabledClusters == null ? new ArrayList<>() : enabledClusters; }
+        public Routing getRouting() { return routing; }
+        public void setRouting(Routing routing) { this.routing = routing; }
+        public Limits getLimits() { return limits; }
+        public void setLimits(Limits limits) { this.limits = limits; }
+        public Analysis getAnalysis() { return analysis; }
+        public void setAnalysis(Analysis analysis) { this.analysis = analysis; }
+        public Governance getGovernance() { return governance; }
+        public void setGovernance(Governance governance) { this.governance = governance; }
     }
 
     private static List<String> normalizeCommands(List<String> commands) {

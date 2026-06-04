@@ -6,5 +6,8 @@ defineProps<{
 </script>
 
 <template>
-  <el-tag :type="type || 'info'" effect="light">{{ label || '-' }}</el-tag>
+  <span class="status-pill" :class="`is-${type || 'info'}`">
+    <span class="status-dot"></span>
+    {{ label || '-' }}
+  </span>
 </template>

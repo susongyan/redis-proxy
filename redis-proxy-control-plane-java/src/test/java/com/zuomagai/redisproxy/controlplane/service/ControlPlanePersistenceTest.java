@@ -84,6 +84,9 @@ class ControlPlanePersistenceTest {
         ObservabilityService restarted = new ObservabilityService(mapper, new ObservabilityProperties(), repository, java.net.http.HttpClient.newHttpClient());
         assertThat(restarted.targets()).hasSize(1);
         assertThat(restarted.targets().getFirst().proxyId()).isEqualTo("proxy-1");
+        assertThat(restarted.targets().getFirst().group()).isEqualTo("frontend");
+        assertThat(restarted.targets().getFirst().advertiseIp()).isEqualTo("10.0.0.1");
+        assertThat(restarted.targets().getFirst().advertisePort()).isEqualTo(6379);
         assertThat(restarted.targets().getFirst().dataplane()).isEqualTo("go");
 
         restarted.delete("proxy-1");
@@ -116,6 +119,9 @@ class ControlPlanePersistenceTest {
     private static ObservabilityTarget target(String proxyId, String adminUrl, String dataplane) {
         ObservabilityTarget target = new ObservabilityTarget();
         target.setProxyId(proxyId);
+        target.setGroup("frontend");
+        target.setAdvertiseIp("10.0.0.1");
+        target.setAdvertisePort(6379);
         target.setAdminUrl(adminUrl);
         target.setDataplane(dataplane);
         target.setCluster("redis-a");

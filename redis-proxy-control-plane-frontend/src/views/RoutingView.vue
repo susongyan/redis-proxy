@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue';
 import { onMounted } from 'vue';
+import ConvergenceStatusHelp from '../components/ConvergenceStatusHelp.vue';
 import MetricStrip from '../components/MetricStrip.vue';
 import StatusTag from '../components/StatusTag.vue';
 import { useControlPlaneStore } from '../stores/controlPlane';
@@ -30,19 +31,26 @@ onMounted(() => store.loadConfigDomain());
 
     <section class="panel section">
       <div class="panel-header">
-        <h2>收敛状态</h2>
+        <div class="title-with-help">
+          <h2>收敛状态</h2>
+          <ConvergenceStatusHelp />
+        </div>
         <StatusTag :label="store.convergence?.status" :type="convergenceTone(store.convergence?.status)" />
       </div>
       <div class="panel-body">
         <el-table :data="store.convergence?.proxies || []" size="small">
           <el-table-column prop="proxyId" label="proxyId" />
+          <el-table-column prop="group" label="group" width="120" />
           <el-table-column prop="dataplane" label="dataplane" width="110" />
           <el-table-column prop="epoch" label="epoch" width="90" />
           <el-table-column label="hash" width="180">
             <template #default="{ row }">{{ compactHash(row.configHash) }}</template>
           </el-table-column>
           <el-table-column prop="reason" label="reason" show-overflow-tooltip />
-          <el-table-column label="status" width="120">
+          <el-table-column width="120">
+            <template #header>
+              <span class="column-header-help">status <ConvergenceStatusHelp /></span>
+            </template>
             <template #default="{ row }"><StatusTag :label="row.status" :type="convergenceTone(row.status)" /></template>
           </el-table-column>
         </el-table>

@@ -9,11 +9,17 @@ public final class ObservabilityModels {
 
     public record TargetStatus(
             String proxyId,
+            String group,
+            String advertiseIp,
+            int advertisePort,
             String adminUrl,
             String dataplane,
             String cluster,
             int pollIntervalSeconds,
             Map<String, String> resourceAttributes,
+            Instant lastHeartbeatAt,
+            int heartbeatTtlSeconds,
+            String registrationSource,
             boolean healthy,
             Instant lastCollectedAt,
             String lastError) {}
@@ -91,6 +97,9 @@ public final class ObservabilityModels {
 
     public record RouteSnapshotObservation(
             String proxyId,
+            String group,
+            String advertiseIp,
+            int advertisePort,
             String dataplane,
             String adminUrl,
             boolean healthy,
@@ -116,6 +125,9 @@ public final class ObservabilityModels {
 
     public record RouteConvergenceInstance(
             String proxyId,
+            String group,
+            String advertiseIp,
+            int advertisePort,
             String dataplane,
             String adminUrl,
             boolean healthy,

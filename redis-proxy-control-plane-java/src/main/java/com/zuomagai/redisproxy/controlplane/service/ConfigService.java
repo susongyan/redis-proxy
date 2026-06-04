@@ -10,8 +10,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -49,6 +52,10 @@ public class ConfigService {
 
     public ProxyConfig get() {
         return copyConfig(current.get());
+    }
+
+    public ProxyConfig snapshotForGroup(String group) {
+        return snapshotForGroup(current.get(), normalizeGroup(group));
     }
 
     public ProxyConfig update(ProxyConfig config) {
@@ -100,6 +107,7 @@ public class ConfigService {
         addChange(changes, "routing.defaultCluster", a.getRouting().getDefaultCluster(), b.getRouting().getDefaultCluster());
         addChange(changes, "routing.backendAffinityStrategy", a.getRouting().getBackendAffinityStrategy(), b.getRouting().getBackendAffinityStrategy());
         addChange(changes, "routing.rules", summarizeRules(a), summarizeRules(b));
+        addChange(changes, "proxyGroups", summarizeProxyGroups(a), summarizeProxyGroups(b));
         addChange(changes, "backends.clusters", summarizeClusters(a), summarizeClusters(b));
         addChange(changes, "limits.maxPipelineDepth", a.getLimits().getMaxPipelineDepth(), b.getLimits().getMaxPipelineDepth());
         addChange(changes, "limits.pipelineFlushBatchSize", a.getLimits().getPipelineFlushBatchSize(), b.getLimits().getPipelineFlushBatchSize());
@@ -117,25 +125,32 @@ public class ConfigService {
     public RouteStatus routeStatus() {
         ConfigVersion version = currentVersion.get();
         ProxyConfig config = version.config();
+        List<RouteStatus.GroupRouteStatus> groups = groupStatuses(config, version.versionId());
+        RouteStatus.GroupRouteStatus defaultStatus = groups.stream()
+                .filter(group -> "default".equals(group.group()))
+                .findFirst()
+                .orElse(groups.getFirst());
         return new RouteStatus(
                 version.versionId(),
                 config.getRouting().getRouteEpoch(),
-                version.versionId(),
-                config.getRouting().getRouteEpoch(),
-                RouteConfigHash.hash(config),
-                config.getRouting().getDefaultCluster(),
-                copyRules(config.getRouting().getRules()),
-                config.getBackends().getClusters().stream().map(ProxyConfig.Cluster::getName).toList(),
+                defaultStatus.expectedVersionId(),
+                defaultStatus.expectedRouteEpoch(),
+                defaultStatus.expectedConfigHash(),
+                defaultStatus.defaultCluster(),
+                defaultStatus.rules(),
+                defaultStatus.clusters(),
+                groups,
                 copyVersion(version));
     }
 
-    public CompletableFuture<Optional<ProxyConfig>> watch(long routeEpoch, Duration timeout) {
-        ProxyConfig config = current.get();
+    public CompletableFuture<Optional<ProxyConfig>> watch(long routeEpoch, String group, Duration timeout) {
+        String normalizedGroup = normalizeGroup(group);
+        ProxyConfig config = snapshotForGroup(current.get(), normalizedGroup);
         if (config.getRouting().getRouteEpoch() > routeEpoch) {
             return CompletableFuture.completedFuture(Optional.of(copyConfig(config)));
         }
         CompletableFuture<Optional<ProxyConfig>> future = new CompletableFuture<>();
-        Watcher watcher = new Watcher(routeEpoch, future);
+        Watcher watcher = new Watcher(routeEpoch, normalizedGroup, future);
         watchers.add(watcher);
         watcherTimeouts.schedule(() -> {
             if (future.complete(Optional.empty())) {
@@ -143,7 +158,7 @@ public class ConfigService {
             }
         }, Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS);
 
-        ProxyConfig latest = current.get();
+        ProxyConfig latest = snapshotForGroup(current.get(), normalizedGroup);
         if (latest.getRouting().getRouteEpoch() > routeEpoch && future.complete(Optional.of(copyConfig(latest)))) {
             watchers.remove(watcher);
         }
@@ -169,8 +184,9 @@ public class ConfigService {
 
     private void completeMatchingWatchers(ProxyConfig config) {
         for (Watcher watcher : watchers) {
-            if (config.getRouting().getRouteEpoch() > watcher.routeEpoch()
-                    && watcher.future().complete(Optional.of(copyConfig(config)))) {
+            ProxyConfig scoped = snapshotForGroup(config, watcher.group());
+            if (scoped.getRouting().getRouteEpoch() > watcher.routeEpoch()
+                    && watcher.future().complete(Optional.of(copyConfig(scoped)))) {
                 watchers.remove(watcher);
             }
         }
@@ -237,7 +253,73 @@ public class ConfigService {
                 throw new IllegalArgumentException("routing rule " + rule.getName() + " must set matchAll, namespace, keyPrefix, keyPattern or hashTag");
             }
         }
+        validateProxyGroups(config, clusterNames, namespaceNames);
         validateGovernance(config.getGovernance());
+    }
+
+    private static void validateProxyGroups(ProxyConfig config, List<String> clusterNames, List<String> namespaceNames) {
+        Set<String> seenGroups = new HashSet<>();
+        for (ProxyConfig.ProxyGroup group : config.getProxyGroups()) {
+            String groupName = normalizeGroup(group.getName());
+            if (!seenGroups.add(groupName)) {
+                throw new IllegalArgumentException("proxy group is duplicated: " + groupName);
+            }
+            if (group.getEnabledClusters().isEmpty()) {
+                throw new IllegalArgumentException("proxy group " + groupName + " enabledClusters must not be empty");
+            }
+            Set<String> enabled = new HashSet<>(group.getEnabledClusters());
+            for (String clusterName : enabled) {
+                if (!clusterNames.contains(clusterName)) {
+                    throw new IllegalArgumentException("proxy group " + groupName + " references unknown cluster " + clusterName);
+                }
+            }
+            ProxyConfig.Routing routing = group.getRouting() == null ? config.getRouting() : group.getRouting();
+            if (!enabled.contains(routing.getDefaultCluster())) {
+                throw new IllegalArgumentException("proxy group " + groupName + " defaultCluster must be in enabledClusters");
+            }
+            if (!List.of("client", "keySlot", "hashTag").contains(routing.getBackendAffinityStrategy())) {
+                throw new IllegalArgumentException("proxy group " + groupName + " backendAffinityStrategy must be client, keySlot or hashTag");
+            }
+            for (ProxyConfig.RouteRule rule : routing.getRules()) {
+                if (!enabled.contains(rule.getCluster())) {
+                    throw new IllegalArgumentException("proxy group " + groupName + " routing rule " + rule.getName() + " cluster must be in enabledClusters");
+                }
+                if (rule.getTrafficPercent() < 0 || rule.getTrafficPercent() > 100) {
+                    throw new IllegalArgumentException("proxy group " + groupName + " routing rule " + rule.getName() + " trafficPercent must be between 0 and 100");
+                }
+                boolean hasNamespace = rule.getNamespace() != null && !rule.getNamespace().isBlank();
+                boolean hasKeyPrefix = rule.getKeyPrefix() != null && !rule.getKeyPrefix().isBlank();
+                boolean hasKeyPattern = rule.getKeyPattern() != null && !rule.getKeyPattern().isBlank();
+                boolean hasHashTag = rule.getHashTag() != null && !rule.getHashTag().isBlank();
+                if (hasNamespace && !namespaceNames.contains(rule.getNamespace())) {
+                    throw new IllegalArgumentException("proxy group " + groupName + " routing rule " + rule.getName() + " references unknown namespace");
+                }
+                if (!rule.isMatchAll() && !hasNamespace && !hasKeyPrefix && !hasKeyPattern && !hasHashTag) {
+                    throw new IllegalArgumentException("proxy group " + groupName + " routing rule " + rule.getName() + " must set matchAll, namespace, keyPrefix, keyPattern or hashTag");
+                }
+            }
+            if (group.getAnalysis() != null) {
+                validateAnalysis(group.getAnalysis());
+            }
+            if (group.getLimits() != null) {
+                validateLimits(group.getLimits());
+            }
+            if (group.getGovernance() != null) {
+                group.getGovernance().applyDefaults();
+                validateGovernance(group.getGovernance());
+            }
+        }
+    }
+
+    private static void validateLimits(ProxyConfig.Limits limits) {
+        if (limits.getMaxPipelineDepth() <= 0
+                || limits.getPipelineFlushBatchSize() <= 0
+                || limits.getPipelineFlushMaxDelayMillis() < 0
+                || limits.getMaxRequestBytes() <= 0
+                || limits.getMaxResponseBytes() <= 0
+                || limits.getLargeResponseBytes() < 0) {
+            throw new IllegalArgumentException("proxy group limits must be positive, pipelineFlushMaxDelayMillis must be >= 0 and largeResponseBytes must be >= 0");
+        }
     }
 
     private static void validateAnalysis(ProxyConfig.Analysis analysis) {
@@ -378,6 +460,18 @@ public class ConfigService {
                 .toString();
     }
 
+    private static String summarizeProxyGroups(ProxyConfig config) {
+        return config.getProxyGroups().stream()
+                .map(group -> normalizeGroup(group.getName())
+                        + ":enabled=" + group.getEnabledClusters()
+                        + ":default=" + (group.getRouting() == null ? "" : group.getRouting().getDefaultCluster())
+                        + ":rules=" + (group.getRouting() == null ? List.of() : group.getRouting().getRules().stream()
+                        .map(rule -> rule.getName() + ":" + rule.getCluster() + ":" + rule.getNamespace() + ":" + rule.getKeyPrefix() + ":" + rule.getHashTag() + ":" + rule.getTrafficPercent())
+                        .toList()))
+                .toList()
+                .toString();
+    }
+
     private static String summarizeHotKey(ProxyConfig config) {
         ProxyConfig.HotKey hotKey = config.getAnalysis().getHotKey();
         return hotKey.isEnabled()
@@ -453,6 +547,68 @@ public class ConfigService {
                 copyConfig(version.config()));
     }
 
+    private static List<RouteStatus.GroupRouteStatus> groupStatuses(ProxyConfig config, long versionId) {
+        List<String> groups = config.getProxyGroups().isEmpty()
+                ? List.of("default")
+                : config.getProxyGroups().stream().map(group -> normalizeGroup(group.getName())).toList();
+        return groups.stream().map(groupName -> {
+            ProxyConfig snapshot = snapshotForGroup(config, groupName);
+            return new RouteStatus.GroupRouteStatus(
+                    groupName,
+                    versionId,
+                    snapshot.getRouting().getRouteEpoch(),
+                    RouteConfigHash.hash(snapshot),
+                    snapshot.getRouting().getDefaultCluster(),
+                    snapshot.getBackends().getClusters().stream().map(ProxyConfig.Cluster::getName).toList(),
+                    copyRules(snapshot.getRouting().getRules()));
+        }).toList();
+    }
+
+    private static ProxyConfig snapshotForGroup(ProxyConfig source, String groupName) {
+        ProxyConfig snapshot = copyConfig(source);
+        ProxyConfig.ProxyGroup group = findProxyGroup(source, groupName);
+        if (group == null) {
+            snapshot.setProxyGroups(List.of());
+            return snapshot;
+        }
+        Set<String> enabledClusters = new HashSet<>(group.getEnabledClusters());
+        snapshot.getBackends().setClusters(source.getBackends().getClusters().stream()
+                .filter(cluster -> enabledClusters.contains(cluster.getName()))
+                .map(ConfigService::copyCluster)
+                .toList());
+        ProxyConfig.Routing routing = group.getRouting() == null ? copyRouting(source.getRouting()) : copyRouting(group.getRouting());
+        routing.setRouteEpoch(source.getRouting().getRouteEpoch());
+        snapshot.setRouting(routing);
+        if (group.getLimits() != null) {
+            snapshot.setLimits(copyLimits(group.getLimits()));
+        }
+        if (group.getAnalysis() != null) {
+            snapshot.setAnalysis(copyAnalysis(group.getAnalysis()));
+        }
+        if (group.getGovernance() != null) {
+            snapshot.setGovernance(copyGovernance(group.getGovernance()));
+            snapshot.getGovernance().applyDefaults();
+        }
+        snapshot.setProxyGroups(List.of());
+        return snapshot;
+    }
+
+    private static ProxyConfig.ProxyGroup findProxyGroup(ProxyConfig config, String groupName) {
+        if (config.getProxyGroups().isEmpty()) {
+            return null;
+        }
+        String normalized = normalizeGroup(groupName);
+        return config.getProxyGroups().stream()
+                .filter(group -> normalized.equals(normalizeGroup(group.getName())))
+                .findFirst()
+                .or(() -> config.getProxyGroups().stream().filter(group -> "default".equals(normalizeGroup(group.getName()))).findFirst())
+                .orElse(null);
+    }
+
+    private static String normalizeGroup(String group) {
+        return group == null || group.isBlank() ? "default" : group.trim();
+    }
+
     private static ProxyConfig copyConfig(ProxyConfig source) {
         ProxyConfig copy = new ProxyConfig();
         copy.getServer().setListen(source.getServer().getListen());
@@ -461,46 +617,63 @@ public class ConfigService {
         copy.getAdmin().setListen(source.getAdmin().getListen());
         copy.setMode(source.getMode());
         copy.getBackends().setClusters(source.getBackends().getClusters().stream().map(ConfigService::copyCluster).toList());
-        copy.getRouting().setDefaultCluster(source.getRouting().getDefaultCluster());
-        copy.getRouting().setRouteEpoch(source.getRouting().getRouteEpoch());
-        copy.getRouting().setClusterSlotsRefreshIntervalSeconds(source.getRouting().getClusterSlotsRefreshIntervalSeconds());
-        copy.getRouting().setBackendAffinityStrategy(source.getRouting().getBackendAffinityStrategy());
-        copy.getRouting().setRules(copyRules(source.getRouting().getRules()));
-        copy.getLimits().setMaxPipelineDepth(source.getLimits().getMaxPipelineDepth());
-        copy.getLimits().setPipelineFlushBatchSize(source.getLimits().getPipelineFlushBatchSize());
-        copy.getLimits().setPipelineFlushMaxDelayMillis(source.getLimits().getPipelineFlushMaxDelayMillis());
-        copy.getLimits().setMaxRequestBytes(source.getLimits().getMaxRequestBytes());
-        copy.getLimits().setMaxResponseBytes(source.getLimits().getMaxResponseBytes());
-        copy.getLimits().setLargeResponseBytes(source.getLimits().getLargeResponseBytes());
+        copy.setRouting(copyRouting(source.getRouting()));
+        copy.setLimits(copyLimits(source.getLimits()));
+        copy.setAnalysis(copyAnalysis(source.getAnalysis()));
+        copy.setGovernance(copyGovernance(source.getGovernance()));
+        copy.setProxyGroups(source.getProxyGroups().stream().map(ConfigService::copyProxyGroup).toList());
+        return copy;
+    }
+
+    private static ProxyConfig.Routing copyRouting(ProxyConfig.Routing source) {
+        ProxyConfig.Routing copy = new ProxyConfig.Routing();
+        copy.setDefaultCluster(source.getDefaultCluster());
+        copy.setRouteEpoch(source.getRouteEpoch());
+        copy.setClusterSlotsRefreshIntervalSeconds(source.getClusterSlotsRefreshIntervalSeconds());
+        copy.setBackendAffinityStrategy(source.getBackendAffinityStrategy());
+        copy.setRules(copyRules(source.getRules()));
+        return copy;
+    }
+
+    private static ProxyConfig.Limits copyLimits(ProxyConfig.Limits source) {
+        ProxyConfig.Limits copy = new ProxyConfig.Limits();
+        copy.setMaxPipelineDepth(source.getMaxPipelineDepth());
+        copy.setPipelineFlushBatchSize(source.getPipelineFlushBatchSize());
+        copy.setPipelineFlushMaxDelayMillis(source.getPipelineFlushMaxDelayMillis());
+        copy.setMaxRequestBytes(source.getMaxRequestBytes());
+        copy.setMaxResponseBytes(source.getMaxResponseBytes());
+        copy.setLargeResponseBytes(source.getLargeResponseBytes());
+        return copy;
+    }
+
+    private static ProxyConfig.Analysis copyAnalysis(ProxyConfig.Analysis source) {
         ProxyConfig.Analysis analysis = new ProxyConfig.Analysis();
         ProxyConfig.HotKey hotKey = new ProxyConfig.HotKey();
-        hotKey.setEnabled(source.getAnalysis().getHotKey().isEnabled());
-        hotKey.setWindowSeconds(source.getAnalysis().getHotKey().getWindowSeconds());
-        hotKey.setBucketMillis(source.getAnalysis().getHotKey().getBucketMillis());
-        hotKey.setMaxTrackedKeys(source.getAnalysis().getHotKey().getMaxTrackedKeys());
-        hotKey.setMetricsTopN(source.getAnalysis().getHotKey().getMetricsTopN());
+        hotKey.setEnabled(source.getHotKey().isEnabled());
+        hotKey.setWindowSeconds(source.getHotKey().getWindowSeconds());
+        hotKey.setBucketMillis(source.getHotKey().getBucketMillis());
+        hotKey.setMaxTrackedKeys(source.getHotKey().getMaxTrackedKeys());
+        hotKey.setMetricsTopN(source.getHotKey().getMetricsTopN());
         analysis.setHotKey(hotKey);
         ProxyConfig.LargeKey largeKey = new ProxyConfig.LargeKey();
-        largeKey.setEnabled(source.getAnalysis().getLargeKey().isEnabled());
-        largeKey.setRequestBytesThreshold(source.getAnalysis().getLargeKey().getRequestBytesThreshold());
-        largeKey.setResponseBytesThreshold(source.getAnalysis().getLargeKey().getResponseBytesThreshold());
-        largeKey.setWindowSeconds(source.getAnalysis().getLargeKey().getWindowSeconds());
-        largeKey.setBucketMillis(source.getAnalysis().getLargeKey().getBucketMillis());
-        largeKey.setMaxTrackedKeys(source.getAnalysis().getLargeKey().getMaxTrackedKeys());
-        largeKey.setDebugTopN(source.getAnalysis().getLargeKey().getDebugTopN());
+        largeKey.setEnabled(source.getLargeKey().isEnabled());
+        largeKey.setRequestBytesThreshold(source.getLargeKey().getRequestBytesThreshold());
+        largeKey.setResponseBytesThreshold(source.getLargeKey().getResponseBytesThreshold());
+        largeKey.setWindowSeconds(source.getLargeKey().getWindowSeconds());
+        largeKey.setBucketMillis(source.getLargeKey().getBucketMillis());
+        largeKey.setMaxTrackedKeys(source.getLargeKey().getMaxTrackedKeys());
+        largeKey.setDebugTopN(source.getLargeKey().getDebugTopN());
         analysis.setLargeKey(largeKey);
         ProxyConfig.SlowQuery slowQuery = new ProxyConfig.SlowQuery();
-        slowQuery.setEnabled(source.getAnalysis().getSlowQuery().isEnabled());
-        slowQuery.setEndToEndThresholdMillis(source.getAnalysis().getSlowQuery().getEndToEndThresholdMillis());
-        slowQuery.setBackendThresholdMillis(source.getAnalysis().getSlowQuery().getBackendThresholdMillis());
-        slowQuery.setWindowSeconds(source.getAnalysis().getSlowQuery().getWindowSeconds());
-        slowQuery.setBucketMillis(source.getAnalysis().getSlowQuery().getBucketMillis());
-        slowQuery.setMaxTrackedKeys(source.getAnalysis().getSlowQuery().getMaxTrackedKeys());
-        slowQuery.setDebugTopN(source.getAnalysis().getSlowQuery().getDebugTopN());
+        slowQuery.setEnabled(source.getSlowQuery().isEnabled());
+        slowQuery.setEndToEndThresholdMillis(source.getSlowQuery().getEndToEndThresholdMillis());
+        slowQuery.setBackendThresholdMillis(source.getSlowQuery().getBackendThresholdMillis());
+        slowQuery.setWindowSeconds(source.getSlowQuery().getWindowSeconds());
+        slowQuery.setBucketMillis(source.getSlowQuery().getBucketMillis());
+        slowQuery.setMaxTrackedKeys(source.getSlowQuery().getMaxTrackedKeys());
+        slowQuery.setDebugTopN(source.getSlowQuery().getDebugTopN());
         analysis.setSlowQuery(slowQuery);
-        copy.setAnalysis(analysis);
-        copy.setGovernance(copyGovernance(source.getGovernance()));
-        return copy;
+        return analysis;
     }
 
     private static ProxyConfig.Cluster copyCluster(ProxyConfig.Cluster source) {
@@ -518,6 +691,9 @@ public class ConfigService {
     }
 
     private static List<ProxyConfig.RouteRule> copyRules(List<ProxyConfig.RouteRule> rules) {
+        if (rules == null) {
+            return List.of();
+        }
         return rules.stream().map(rule -> {
             ProxyConfig.RouteRule copy = new ProxyConfig.RouteRule();
             copy.setName(rule.getName());
@@ -574,6 +750,25 @@ public class ConfigService {
         return copy;
     }
 
+    private static ProxyConfig.ProxyGroup copyProxyGroup(ProxyConfig.ProxyGroup source) {
+        ProxyConfig.ProxyGroup copy = new ProxyConfig.ProxyGroup();
+        copy.setName(source.getName());
+        copy.setEnabledClusters(List.copyOf(source.getEnabledClusters()));
+        if (source.getRouting() != null) {
+            copy.setRouting(copyRouting(source.getRouting()));
+        }
+        if (source.getLimits() != null) {
+            copy.setLimits(copyLimits(source.getLimits()));
+        }
+        if (source.getAnalysis() != null) {
+            copy.setAnalysis(copyAnalysis(source.getAnalysis()));
+        }
+        if (source.getGovernance() != null) {
+            copy.setGovernance(copyGovernance(source.getGovernance()));
+        }
+        return copy;
+    }
+
     private static ProxyConfig defaultConfig() {
         ProxyConfig config = new ProxyConfig();
         ProxyConfig.Cluster cluster = new ProxyConfig.Cluster();
@@ -584,6 +779,6 @@ public class ConfigService {
         return config;
     }
 
-    private record Watcher(long routeEpoch, CompletableFuture<Optional<ProxyConfig>> future) {
+    private record Watcher(long routeEpoch, String group, CompletableFuture<Optional<ProxyConfig>> future) {
     }
 }
