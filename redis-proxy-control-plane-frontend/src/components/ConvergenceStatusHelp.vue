@@ -40,7 +40,7 @@ const statuses = [
       <p>控制面发布成功只代表期望态已更新，状态以每台 proxy 上报的 routeEpoch + configHash + apply 结果 + heartbeat 判断。</p>
       <dl>
         <template v-for="item in statuses" :key="item.name">
-          <dt>{{ item.name }} · {{ item.tone }}</dt>
+          <dt :class="`is-${item.name.toLowerCase()}`">{{ item.name }} · {{ item.tone }}</dt>
           <dd>{{ item.description }}</dd>
         </template>
       </dl>
@@ -52,11 +52,11 @@ const statuses = [
 .status-help-button {
   width: 24px;
   height: 24px;
-  color: #64748b;
+  color: #67e8f9;
 }
 
 .status-help {
-  color: #263244;
+  color: #dbeafe;
   font-size: 13px;
   line-height: 1.55;
 }
@@ -64,13 +64,13 @@ const statuses = [
 .status-help strong {
   display: block;
   margin-bottom: 8px;
-  color: #111827;
+  color: #e5eefb;
   font-size: 14px;
 }
 
 .status-help p {
   margin: 0 0 10px;
-  color: #64748b;
+  color: #9fb0c8;
 }
 
 .status-help dl {
@@ -79,12 +79,25 @@ const statuses = [
 
 .status-help dt {
   margin-top: 9px;
-  color: #111827;
   font-weight: 700;
+}
+
+.status-help dt.is-converged {
+  color: #86efac;
+}
+
+.status-help dt.is-partial,
+.status-help dt.is-stale {
+  color: #fde68a;
+}
+
+.status-help dt.is-drift,
+.status-help dt.is-unreachable {
+  color: #fca5a5;
 }
 
 .status-help dd {
   margin: 2px 0 0;
-  color: #526071;
+  color: #cbd5e1;
 }
 </style>

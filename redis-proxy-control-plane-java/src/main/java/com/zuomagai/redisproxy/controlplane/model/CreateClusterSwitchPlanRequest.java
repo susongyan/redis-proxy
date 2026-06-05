@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class CreateClusterSwitchPlanRequest {
+    private String proxyGroup = "default";
     @NotBlank private String sourceCluster;
     @NotBlank private String targetCluster;
     private String mode = "STAGED";
@@ -14,6 +15,8 @@ public class CreateClusterSwitchPlanRequest {
     @NotBlank private String reason;
     @Valid private ProxyConfig.Cluster targetClusterDefinition;
 
+    public String getProxyGroup() { return proxyGroup; }
+    public void setProxyGroup(String proxyGroup) { this.proxyGroup = proxyGroup; }
     public String getSourceCluster() { return sourceCluster; }
     public void setSourceCluster(String sourceCluster) { this.sourceCluster = sourceCluster; }
     public String getTargetCluster() { return targetCluster; }

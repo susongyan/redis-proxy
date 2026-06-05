@@ -47,25 +47,28 @@ public class ClusterSwitchService {
 
     public ClusterSwitchPlan create(CreateClusterSwitchPlanRequest request) {
         ProxyConfig current = configService.get();
+        String proxyGroup = normalizeGroup(request.getProxyGroup());
         String source = required(request.getSourceCluster(), "sourceCluster");
         String target = required(request.getTargetCluster(), "targetCluster");
         String mode = normalizeMode(request.getMode());
-        if (!source.equals(current.getRouting().getDefaultCluster())) {
-            throw new IllegalArgumentException("sourceCluster must match current defaultCluster");
+        GroupSwitchTarget group = groupSwitchTarget(current, proxyGroup);
+        if (!source.equals(group.routing().getDefaultCluster())) {
+            throw new IllegalArgumentException("sourceCluster must match selected proxyGroup defaultCluster");
         }
-        if (repository.findActiveBySourceCluster(source).isPresent()) {
-            throw new IllegalArgumentException("active cluster switch plan already exists for source cluster " + source);
+        if (repository.findActiveByProxyGroupAndSourceCluster(proxyGroup, source).isPresent()) {
+            throw new IllegalArgumentException("active cluster switch plan already exists for proxyGroup " + proxyGroup + " and source cluster " + source);
         }
-        if (!clusterExists(current, source)) {
-            throw new IllegalArgumentException("sourceCluster does not exist: " + source);
+        if (!clusterExists(current, source) || !group.clusterEnabled(source)) {
+            throw new IllegalArgumentException("sourceCluster is not enabled for proxyGroup " + proxyGroup + ": " + source);
         }
-        if (!clusterExists(current, target) && request.getTargetClusterDefinition() == null) {
-            throw new IllegalArgumentException("targetCluster must exist or targetClusterDefinition must be provided");
+        if (!group.clusterEnabled(target) && request.getTargetClusterDefinition() == null) {
+            throw new IllegalArgumentException("targetCluster must be enabled for proxyGroup or targetClusterDefinition must be provided");
         }
         if (request.getTargetClusterDefinition() != null && !target.equals(request.getTargetClusterDefinition().getName())) {
             throw new IllegalArgumentException("targetClusterDefinition.name must match targetCluster");
         }
         ClusterSwitchPlan plan = new ClusterSwitchPlan();
+        plan.setProxyGroup(proxyGroup);
         plan.setSourceCluster(source);
         plan.setTargetCluster(target);
         plan.setMode(mode);
@@ -177,14 +180,29 @@ public class ClusterSwitchService {
         ProxyConfig next = copyConfig(configService.get());
         ensureTargetCluster(next, plan);
         next.getRouting().setRouteEpoch(next.getRouting().getRouteEpoch() + 1);
-        removeSwitchRule(next, plan.getPlanId());
-        if (percent >= 100 || "FULL".equals(plan.getMode())) {
-            next.getRouting().setDefaultCluster(plan.getTargetCluster());
+        GroupSwitchTarget group = groupSwitchTarget(next, plan.getProxyGroup());
+        if (group.legacyDefault()) {
+            removeSwitchRule(next.getRouting(), plan.getPlanId());
+            if (percent >= 100 || "FULL".equals(plan.getMode())) {
+                next.getRouting().setDefaultCluster(plan.getTargetCluster());
+            } else {
+                next.getRouting().setDefaultCluster(plan.getSourceCluster());
+                List<ProxyConfig.RouteRule> rules = new ArrayList<>(next.getRouting().getRules());
+                rules.add(0, switchRule(plan, percent));
+                next.getRouting().setRules(rules);
+            }
         } else {
-            next.getRouting().setDefaultCluster(plan.getSourceCluster());
-            List<ProxyConfig.RouteRule> rules = new ArrayList<>(next.getRouting().getRules());
-            rules.add(0, switchRule(plan, percent));
-            next.getRouting().setRules(rules);
+            ensureTargetEnabledForGroup(group.group(), plan.getTargetCluster());
+            group.routing().setRouteEpoch(next.getRouting().getRouteEpoch());
+            removeSwitchRule(group.routing(), plan.getPlanId());
+            if (percent >= 100 || "FULL".equals(plan.getMode())) {
+                group.routing().setDefaultCluster(plan.getTargetCluster());
+            } else {
+                group.routing().setDefaultCluster(plan.getSourceCluster());
+                List<ProxyConfig.RouteRule> rules = new ArrayList<>(group.routing().getRules());
+                rules.add(0, switchRule(plan, percent));
+                group.routing().setRules(rules);
+            }
         }
         PublishRequest publish = new PublishRequest();
         publish.setConfig(next);
@@ -196,14 +214,15 @@ public class ClusterSwitchService {
 
     private void validatePlanAgainstCurrent(ClusterSwitchPlan plan) {
         ProxyConfig current = configService.get();
-        if (!clusterExists(current, plan.getSourceCluster())) {
-            throw new IllegalArgumentException("sourceCluster does not exist: " + plan.getSourceCluster());
+        GroupSwitchTarget group = groupSwitchTarget(current, plan.getProxyGroup());
+        if (!clusterExists(current, plan.getSourceCluster()) || !group.clusterEnabled(plan.getSourceCluster())) {
+            throw new IllegalArgumentException("sourceCluster is not enabled for proxyGroup " + plan.getProxyGroup() + ": " + plan.getSourceCluster());
         }
-        if (!plan.getSourceCluster().equals(current.getRouting().getDefaultCluster())) {
-            throw new IllegalArgumentException("sourceCluster must match current defaultCluster before switch starts");
+        if (!plan.getSourceCluster().equals(group.routing().getDefaultCluster())) {
+            throw new IllegalArgumentException("sourceCluster must match selected proxyGroup defaultCluster before switch starts");
         }
-        if (!clusterExists(current, plan.getTargetCluster()) && plan.getTargetClusterDefinition() == null) {
-            throw new IllegalArgumentException("targetCluster must exist or targetClusterDefinition must be provided");
+        if (!group.clusterEnabled(plan.getTargetCluster()) && plan.getTargetClusterDefinition() == null) {
+            throw new IllegalArgumentException("targetCluster must be enabled for proxyGroup or targetClusterDefinition must be provided");
         }
     }
 
@@ -223,9 +242,9 @@ public class ClusterSwitchService {
         return rule;
     }
 
-    private void removeSwitchRule(ProxyConfig config, long planId) {
+    private void removeSwitchRule(ProxyConfig.Routing routing, long planId) {
         String name = ruleName(planId);
-        config.getRouting().setRules(config.getRouting().getRules().stream()
+        routing.setRules(routing.getRules().stream()
                 .filter(rule -> !name.equals(rule.getName()))
                 .toList());
     }
@@ -246,8 +265,46 @@ public class ClusterSwitchService {
         config.getBackends().setClusters(clusters);
     }
 
+    private void ensureTargetEnabledForGroup(ProxyConfig.ProxyGroup group, String targetCluster) {
+        List<String> enabled = new ArrayList<>(group.getEnabledClusters());
+        if (!enabled.contains(targetCluster)) {
+            enabled.add(targetCluster);
+            group.setEnabledClusters(enabled);
+        }
+    }
+
     private boolean clusterExists(ProxyConfig config, String name) {
         return config.getBackends().getClusters().stream().anyMatch(cluster -> name.equals(cluster.getName()));
+    }
+
+    private GroupSwitchTarget groupSwitchTarget(ProxyConfig config, String proxyGroup) {
+        String normalizedGroup = normalizeGroup(proxyGroup);
+        if (config.getProxyGroups().isEmpty()) {
+            if (!"default".equals(normalizedGroup)) {
+                throw new IllegalArgumentException("proxyGroup does not exist: " + normalizedGroup);
+            }
+            Set<String> clusters = config.getBackends().getClusters().stream()
+                    .map(ProxyConfig.Cluster::getName)
+                    .collect(java.util.stream.Collectors.toSet());
+            return new GroupSwitchTarget(null, config.getRouting(), clusters, true);
+        }
+        ProxyConfig.ProxyGroup group = config.getProxyGroups().stream()
+                .filter(candidate -> normalizedGroup.equals(normalizeGroup(candidate.getName())))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("proxyGroup does not exist: " + normalizedGroup));
+        if (group.getRouting() == null) {
+            ProxyConfig.Routing routing = copyConfig(config).getRouting();
+            routing.setDefaultCluster(group.getEnabledClusters().isEmpty() ? config.getRouting().getDefaultCluster() : group.getEnabledClusters().getFirst());
+            group.setRouting(routing);
+        }
+        if (group.getRouting().getRules() == null) {
+            group.getRouting().setRules(List.of());
+        }
+        return new GroupSwitchTarget(group, group.getRouting(), Set.copyOf(group.getEnabledClusters()), false);
+    }
+
+    private String normalizeGroup(String value) {
+        return value == null || value.isBlank() ? "default" : value.trim();
     }
 
     private void recordPublished(ClusterSwitchPlan plan, int percent, ConfigVersion version, String action) {
@@ -352,5 +409,15 @@ public class ClusterSwitchService {
 
     private ProxyConfig.Cluster copyCluster(ProxyConfig.Cluster cluster) {
         return cluster == null ? null : objectMapper.convertValue(cluster, ProxyConfig.Cluster.class);
+    }
+
+    private record GroupSwitchTarget(
+            ProxyConfig.ProxyGroup group,
+            ProxyConfig.Routing routing,
+            Set<String> enabledClusters,
+            boolean legacyDefault) {
+        boolean clusterEnabled(String cluster) {
+            return enabledClusters.contains(cluster);
+        }
     }
 }

@@ -82,12 +82,14 @@ public class JdbcClusterSwitchPlanRepository implements ClusterSwitchPlanReposit
     }
 
     @Override
-    public Optional<ClusterSwitchPlan> findActiveBySourceCluster(String sourceCluster) {
+    public Optional<ClusterSwitchPlan> findActiveByProxyGroupAndSourceCluster(String proxyGroup, String sourceCluster) {
+        String normalizedGroup = proxyGroup == null || proxyGroup.isBlank() ? "default" : proxyGroup;
         return jdbc.query(
                         "SELECT * FROM cluster_switch_plans WHERE source_cluster = ? ORDER BY plan_id",
                         this::mapPlan,
                         sourceCluster)
                 .stream()
+                .filter(plan -> normalizedGroup.equals(plan.getProxyGroup()))
                 .filter(plan -> !TERMINAL.contains(plan.getStatus()))
                 .findFirst();
     }

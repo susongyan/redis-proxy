@@ -96,11 +96,13 @@ export const useControlPlaneStore = defineStore('control-plane', {
     },
     async loadClusterSwitch() {
       await this.withLoading(async () => {
-        const [plans, routeStatus, convergence] = await Promise.all([
+        const [config, plans, routeStatus, convergence] = await Promise.all([
+          api.config.current(),
           api.clusterSwitch.plans(),
           api.routes.status(),
           api.routes.convergence()
         ]);
+        this.config = config;
         this.plans = plans;
         this.routeStatus = routeStatus;
         this.convergence = convergence;

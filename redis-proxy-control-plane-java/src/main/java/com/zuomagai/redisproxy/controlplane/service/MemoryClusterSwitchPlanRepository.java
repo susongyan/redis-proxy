@@ -51,8 +51,10 @@ final class MemoryClusterSwitchPlanRepository implements ClusterSwitchPlanReposi
     }
 
     @Override
-    public Optional<ClusterSwitchPlan> findActiveBySourceCluster(String sourceCluster) {
+    public Optional<ClusterSwitchPlan> findActiveByProxyGroupAndSourceCluster(String proxyGroup, String sourceCluster) {
+        String normalizedGroup = proxyGroup == null || proxyGroup.isBlank() ? "default" : proxyGroup;
         return plans.values().stream()
+                .filter(plan -> normalizedGroup.equals(plan.getProxyGroup()))
                 .filter(plan -> sourceCluster.equals(plan.getSourceCluster()))
                 .filter(plan -> !TERMINAL.contains(plan.getStatus()))
                 .min(Comparator.comparingLong(ClusterSwitchPlan::getPlanId))

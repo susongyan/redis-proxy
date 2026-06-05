@@ -11,5 +11,5 @@ public interface ClusterSwitchPlanRepository {
 
     List<ClusterSwitchPlan> findAll();
 
-    Optional<ClusterSwitchPlan> findActiveBySourceCluster(String sourceCluster);
+    Optional<ClusterSwitchPlan> findActiveByProxyGroupAndSourceCluster(String proxyGroup, String sourceCluster);
 }

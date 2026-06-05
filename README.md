@@ -46,7 +46,7 @@ flowchart LR
 - 双数据面：Go async backend 与 Java Netty async backend，能力口径保持对齐。
 - Redis Cluster 路由：支持 `CLUSTER SLOTS` 刷新、MOVED 单 slot 更新、ASKING 临时路由、degraded refresh 和真实 `/readyz`。
 - 动态路由：支持 `routeEpoch` 原子切换、长轮询发布、namespace / key pattern / hash tag 路由、百分比灰度和基于更大 epoch 的回滚。
-- 整集群切换：控制面支持一键全量切换和分阶段灰度切换，用于机器迁移、上下云和机房搬迁。
+- 整集群切换：控制面支持按 `proxyGroup` 创建一键全量切换和分阶段灰度切换计划，用于机器迁移、上下云和机房搬迁。
 - 多 proxy 收敛：数据面可自动注册到控制面，通过 `routeEpoch + configHash + proxyId + heartbeat` 判断每台数据面是否应用同一配置。
 - 治理能力：支持 `AUTH <namespace> <token>`、命令治理、只读 namespace、allowed key prefix、namespace 限流、key 禁用和 key rule 滑动窗口限流。
 - 观测分析：支持热 key TopK、大 key、大 response、慢查询 TopN、控制面 Collector 和本地巡检报告。
@@ -85,6 +85,8 @@ flowchart LR
 控制面配置发布成功只代表“期望态”已经更新，不代表所有 proxy 实例已经生效。发布后控制面会记录 `expectedVersionId`、`expectedRouteEpoch` 和 group-scoped `expectedConfigHash`，数据面通过长轮询 `/api/v1/config/watch?group=<group>&proxyId=<proxyId>` 接受本组裁剪后的 route snapshot 并原子切换本地快照。
 
 控制面完整配置支持 `proxyGroups`。未配置时兼容旧模型，所有数据面使用 `default` group；配置后，每个 group 只会收到 `enabledClusters` 引用的 Redis clusters、group routing 和可选覆盖的 limits/governance/analysis，无关 Redis backend 不会被该组 proxy 建连。
+
+集群切换计划也按 `proxyGroup` 生效。创建计划时选择一个 proxy group，控制面只修改该 group 的 `routing.defaultCluster`、临时 `matchAll` 灰度规则和必要的 `enabledClusters`；其他 group 的 routing 不会被切换计划改写。未配置 `proxyGroups` 的老配置按 `default` group 走兼容的全局切换语义。
 
 数据面启用 `registration.enabled=true` 后会主动 upsert 到 `POST /api/v1/observability/targets`，并周期 heartbeat。数据面支持分组部署，本地 `instance.group` 默认参与生成 `proxyId=${group}-${advertiseIp}-${dataPort}`，例如 `frontend-10-0-0-1-6379`；显式配置 `instance.proxyId` 时保持兼容不覆盖。控制面 Collector 拉取每台数据面的 `/debug/route-snapshot`，并按 target.group 选择对应 expected hash，使用以下条件判断是否收敛：
 

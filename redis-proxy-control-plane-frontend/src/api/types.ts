@@ -194,6 +194,7 @@ export interface RouteConvergenceInstance {
 
 export interface ClusterSwitchPlan {
   planId: number;
+  proxyGroup?: string;
   sourceCluster: string;
   targetCluster: string;
   mode: 'STAGED' | 'FULL' | string;

@@ -39,6 +39,7 @@ const readonlyViewMode = ref<'json' | 'yaml'>('json');
 const versionConfigDialogVisible = ref(false);
 const versionConfigViewMode = ref<'json' | 'yaml'>('json');
 const viewedVersion = ref<ConfigVersion>();
+const viewedVersionDiffTarget = ref<number>();
 
 const isEditing = computed(() => activeTab.value === 'visual' || activeTab.value === 'json');
 const yamlPreview = computed(() => toYaml(maskTokens(draft.value)));
@@ -250,7 +251,21 @@ function versionRowClass({ row }: { row: ConfigVersion }) {
 function viewVersionConfig(version: ConfigVersion) {
   viewedVersion.value = version;
   versionConfigViewMode.value = 'json';
+  viewedVersionDiffTarget.value = latestVersion.value?.versionId === version.versionId
+    ? sortedVersions.value.find((candidate) => candidate.versionId !== version.versionId)?.versionId
+    : latestVersion.value?.versionId;
   versionConfigDialogVisible.value = true;
+}
+
+async function compareViewedVersion() {
+  if (!viewedVersion.value || !viewedVersionDiffTarget.value) {
+    ElMessage.warning('请选择要对比的目标版本');
+    return;
+  }
+  selectedVersion.value = viewedVersion.value.versionId;
+  diffTarget.value = viewedVersionDiffTarget.value;
+  versionConfigDialogVisible.value = false;
+  await previewDiff();
 }
 
 function mergeConvergenceStatus(left: string, right: string) {
@@ -801,6 +816,21 @@ onMounted(load);
       </template>
       <div class="version-config-toolbar">
         <el-segmented v-model="versionConfigViewMode" :options="[{ label: 'JSON', value: 'json' }, { label: 'YAML 预览', value: 'yaml' }]" />
+        <div class="version-config-compare">
+          <span class="subtle">对比到</span>
+          <el-select v-model="viewedVersionDiffTarget" placeholder="选择目标版本" style="width: 210px">
+            <el-option
+              v-for="version in sortedVersions"
+              :key="version.versionId"
+              :disabled="version.versionId === viewedVersion?.versionId"
+              :label="versionOptionLabel(version, 'to')"
+              :value="version.versionId"
+            />
+          </el-select>
+          <el-button type="primary" :disabled="!viewedVersionDiffTarget || viewedVersionDiffTarget === viewedVersion?.versionId" @click="compareViewedVersion">
+            对比
+          </el-button>
+        </div>
       </div>
       <pre class="code-block version-config-viewer">{{ viewedVersionText }}</pre>
     </el-dialog>

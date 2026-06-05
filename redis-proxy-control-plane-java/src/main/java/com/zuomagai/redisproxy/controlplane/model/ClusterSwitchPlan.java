@@ -6,6 +6,7 @@ import java.util.List;
 
 public class ClusterSwitchPlan {
     private long planId;
+    private String proxyGroup = "default";
     private String sourceCluster;
     private String targetCluster;
     private String mode = "STAGED";
@@ -22,6 +23,8 @@ public class ClusterSwitchPlan {
 
     public long getPlanId() { return planId; }
     public void setPlanId(long planId) { this.planId = planId; }
+    public String getProxyGroup() { return proxyGroup == null || proxyGroup.isBlank() ? "default" : proxyGroup; }
+    public void setProxyGroup(String proxyGroup) { this.proxyGroup = proxyGroup == null || proxyGroup.isBlank() ? "default" : proxyGroup; }
     public String getSourceCluster() { return sourceCluster; }
     public void setSourceCluster(String sourceCluster) { this.sourceCluster = sourceCluster; }
     public String getTargetCluster() { return targetCluster; }

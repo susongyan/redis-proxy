@@ -166,6 +166,8 @@ governance:
 - `proxyGroups` 用于大规模部署下的分组快照裁剪；控制面保存完整配置，数据面 watch 时携带本地 `instance.group/proxyId`，控制面只返回该 group 的 `enabledClusters`、group routing 和可选覆盖项。
 - 未配置 `proxyGroups` 时，控制面自动按 `default` group 派生快照，行为兼容当前全局 `backends/routing/limits/governance/analysis`。
 - group-scoped snapshot 不包含 `proxyGroups` 本身，数据面收到后仍按普通 `ProxyConfig` 应用；因此无关 Redis clusters 不会被该 group 的 proxy ensure 连接。
+- 集群切换计划按 `proxyGroup` 生效；创建计划只保存编排状态，不立即发布配置。只有 `start`、`advance`、`jump` 或 `rollback` 才会生成新的配置版本并通过数据面长轮询生效。
+- group-scoped cluster switch 只改目标 group 的 `routing.defaultCluster`、临时 `matchAll` 灰度规则和必要的 `enabledClusters`；非目标 group 不参与该计划。
 - `backends.clusters[].auth` 用于 proxy 到 Redis backend 的认证；`username` 为空时发送 `AUTH <password>`，非空时发送 Redis ACL 形式 `AUTH <username> <password>`。
 - `auth.enabled=true` 时 `password` 必填；控制面前端和 YAML 预览必须掩码展示 password。
 - `matchAll=true` 用于整集群切换类规则，按首个 key 或 namespace 做稳定分流；`trafficPercent=100` 完成后应改写 `defaultCluster` 并移除临时规则。
