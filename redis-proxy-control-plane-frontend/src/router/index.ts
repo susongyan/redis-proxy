@@ -11,7 +11,7 @@ export const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', name: 'dashboard', component: DashboardView, meta: { title: '总览' } },
   { path: '/config', name: 'config', component: ConfigCenterView, meta: { title: '配置中心' } },
-  { path: '/routing', name: 'routing', component: RoutingView, meta: { title: '路由与集群调度' } },
+  { path: '/routing', name: 'routing', component: RoutingView, meta: { title: '路由与实例收敛' } },
   { path: '/cluster-switch', name: 'cluster-switch', component: ClusterSwitchView, meta: { title: '整集群切换' } },
   { path: '/proxies', name: 'proxies', component: ProxyConvergenceView, meta: { title: 'Proxy 实例与收敛' } },
   { path: '/governance', name: 'governance', component: GovernanceView, meta: { title: '治理能力' } },
