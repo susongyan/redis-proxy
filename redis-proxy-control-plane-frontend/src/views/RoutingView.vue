@@ -685,8 +685,8 @@ onMounted(load);
               </el-table-column>
               <el-table-column label="操作" width="120" fixed="right">
                 <template #default="{ row }">
-                  <el-button size="small" :icon="View" @click.stop="selectProxy(row)" />
-                  <el-button size="small" type="danger" :icon="Delete" @click.stop="remove(row.proxyId)" />
+                  <el-button size="small" :icon="View" aria-label="查看实例详情" title="查看实例详情" @click.stop="selectProxy(row)" />
+                  <el-button size="small" type="danger" :icon="Delete" aria-label="删除实例" title="删除实例" @click.stop="remove(row.proxyId)" />
                 </template>
               </el-table-column>
             </el-table>

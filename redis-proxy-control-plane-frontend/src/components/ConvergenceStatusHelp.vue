@@ -52,11 +52,11 @@ const statuses = [
 .status-help-button {
   width: 24px;
   height: 24px;
-  color: #67e8f9;
+  color: #7ec6e0;
 }
 
 .status-help {
-  color: #dbeafe;
+  color: #d4dcea;
   font-size: 13px;
   line-height: 1.55;
 }
@@ -64,13 +64,13 @@ const statuses = [
 .status-help strong {
   display: block;
   margin-bottom: 8px;
-  color: #e5eefb;
+  color: #e2e9f4;
   font-size: 14px;
 }
 
 .status-help p {
   margin: 0 0 10px;
-  color: #9fb0c8;
+  color: #95a2b6;
 }
 
 .status-help dl {
@@ -83,21 +83,21 @@ const statuses = [
 }
 
 .status-help dt.is-converged {
-  color: #86efac;
+  color: #8fd9bb;
 }
 
 .status-help dt.is-partial,
 .status-help dt.is-stale {
-  color: #fde68a;
+  color: #e8c68d;
 }
 
 .status-help dt.is-drift,
 .status-help dt.is-unreachable {
-  color: #fca5a5;
+  color: #e7a9a6;
 }
 
 .status-help dd {
   margin: 2px 0 0;
-  color: #cbd5e1;
+  color: #c2ccdb;
 }
 </style>
