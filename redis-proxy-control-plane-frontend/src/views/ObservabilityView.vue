@@ -20,19 +20,19 @@ async function load() {
     chart.setOption({
       backgroundColor: 'transparent',
       grid: { left: 48, right: 16, top: 24, bottom: 42 },
-      tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e5eefb' } },
+      tooltip: { trigger: 'axis', backgroundColor: '#151c2c', borderColor: '#2a3654', textStyle: { color: '#e2e9f4' } },
       xAxis: {
         type: 'category',
         data: history.points.map((point) => formatDateTime(point.timestamp)),
-        axisLine: { lineStyle: { color: '#334155' } },
-        axisLabel: { color: '#9fb0c8' }
+        axisLine: { lineStyle: { color: '#2a3654' } },
+        axisLabel: { color: '#95a2b6' }
       },
       yAxis: {
         type: 'value',
-        splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.14)' } },
-        axisLabel: { color: '#9fb0c8' }
+        splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.12)' } },
+        axisLabel: { color: '#95a2b6' }
       },
-      series: [{ type: 'line', smooth: true, data: history.points.map((point) => point.value), itemStyle: { color: '#22c55e' }, areaStyle: { color: 'rgba(34, 197, 94, 0.12)' } }]
+      series: [{ type: 'line', smooth: true, data: history.points.map((point) => point.value), itemStyle: { color: '#46b487' }, areaStyle: { color: 'rgba(70, 180, 135, 0.12)' } }]
     });
   }
 }

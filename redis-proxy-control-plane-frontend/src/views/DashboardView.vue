@@ -30,22 +30,22 @@ function renderChart() {
   chart.setOption({
     backgroundColor: 'transparent',
     grid: { left: 36, right: 12, top: 22, bottom: 32 },
-    tooltip: { backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e5eefb' } },
+    tooltip: { backgroundColor: '#151c2c', borderColor: '#2a3654', textStyle: { color: '#e2e9f4' } },
     xAxis: {
       type: 'category',
       data: ['Auth', 'Governance', 'Namespace', 'KeyRule', 'Hot', 'Large', 'Slow'],
-      axisLine: { lineStyle: { color: '#334155' } },
-      axisLabel: { color: '#9fb0c8' }
+      axisLine: { lineStyle: { color: '#2a3654' } },
+      axisLabel: { color: '#95a2b6' }
     },
     yAxis: {
       type: 'value',
-      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.14)' } },
-      axisLabel: { color: '#9fb0c8' }
+      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.12)' } },
+      axisLabel: { color: '#95a2b6' }
     },
     series: [
       {
         type: 'bar',
-        itemStyle: { color: '#22d3ee', borderRadius: [4, 4, 0, 0] },
+        itemStyle: { color: '#5aa9cf', borderRadius: [4, 4, 0, 0] },
         data: [
           totals.authTotal || 0,
           totals.governanceRejectTotal || 0,

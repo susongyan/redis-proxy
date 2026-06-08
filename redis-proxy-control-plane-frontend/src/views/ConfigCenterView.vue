@@ -34,6 +34,9 @@ const diffTarget = ref<number>();
 const diff = ref<ConfigDiff>();
 const draft = ref<DraftConfig>(normalizeConfig());
 const waitingConvergence = ref(false);
+const publishing = ref(false);
+const publishReviewVisible = ref(false);
+const activeCollapse = ref(['basic']);
 const yamlDrawerVisible = ref(false);
 const readonlyViewMode = ref<'json' | 'yaml'>('json');
 const versionConfigDialogVisible = ref(false);
@@ -43,6 +46,9 @@ const viewedVersionDiffTarget = ref<number>();
 
 const isEditing = computed(() => activeTab.value === 'visual' || activeTab.value === 'json');
 const yamlPreview = computed(() => toYaml(maskTokens(draft.value)));
+const publishDiff = computed(() => buildYamlDiff(store.config || ({} as ProxyConfig), clone(draft.value)));
+const publishIssues = computed(() => validateDraft(draft.value));
+const publishHasChanges = computed(() => publishDiff.value.stats.added + publishDiff.value.stats.removed > 0);
 const currentMaskedJson = computed(() => JSON.stringify(maskTokens(store.config || {}), null, 2));
 const currentMaskedYaml = computed(() => toYaml(maskTokens(store.config || {})));
 const readonlyConfigText = computed(() => (readonlyViewMode.value === 'yaml' ? currentMaskedYaml.value : currentMaskedJson.value));
@@ -174,21 +180,150 @@ async function load() {
 }
 
 function applyJsonToForm() {
-  draft.value = normalizeConfig(JSON.parse(editorText.value) as ProxyConfig);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(editorText.value);
+  } catch (error) {
+    ElMessage.error(`JSON 解析失败：${errorMessage(error)}`);
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    ElMessage.error('JSON 顶层必须是一个配置对象');
+    return;
+  }
+  draft.value = normalizeConfig(parsed as ProxyConfig);
   ElMessage.success('JSON 已应用到配置草稿');
 }
 
-async function publish() {
-  await ElMessageBox.confirm(
-    `即将发布 routeEpoch=${draft.value.routing.routeEpoch ?? '-'}，发布后会等待数据面按更大 epoch 接受快照。`,
-    '确认发布配置',
-    { type: 'warning' }
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function validateDraft(config: DraftConfig): string[] {
+  const issues: string[] = [];
+  const clusters = config.backends?.clusters || [];
+  const clusterNames = clusters.map((cluster) => cluster.name?.trim()).filter(Boolean) as string[];
+  if (!clusters.length) {
+    issues.push('至少需要一个 Redis 集群');
+  }
+  const seenCluster = new Set<string>();
+  clusters.forEach((cluster, index) => {
+    const label = cluster.name?.trim() || `cluster-${index + 1}`;
+    if (!cluster.name?.trim()) {
+      issues.push(`第 ${index + 1} 个集群缺少 name`);
+    } else if (seenCluster.has(cluster.name.trim())) {
+      issues.push(`集群 name 重复：${cluster.name.trim()}`);
+    } else {
+      seenCluster.add(cluster.name.trim());
+    }
+    if (!(cluster.nodes || []).filter(Boolean).length) {
+      issues.push(`集群 ${label} 至少需要一个 node`);
+    }
+    if (cluster.auth?.enabled && !cluster.auth.password?.trim()) {
+      issues.push(`集群 ${label} 开启认证时 Redis 密码必填`);
+    }
+  });
+
+  const defaultCluster = config.routing?.defaultCluster?.trim();
+  if (!defaultCluster) {
+    issues.push('routing.defaultCluster 必填');
+  } else if (!clusterNames.includes(defaultCluster)) {
+    issues.push(`defaultCluster 引用了不存在的集群：${defaultCluster}`);
+  }
+
+  const namespaceNames = new Set(
+    (config.governance?.namespaces || []).map((namespace) => namespace.name?.trim()).filter(Boolean) as string[]
   );
-  await api.config.publish(clone(draft.value), operator.value, reason.value || 'frontend-publish');
-  ElMessage.info('配置已发布，正在等待数据面收敛');
-  await load();
-  await waitForConvergence();
-  activeTab.value = 'current';
+  (config.routing?.rules || []).forEach((rule, index) => {
+    const label = rule.name?.trim() || `rule-${index + 1}`;
+    if (!rule.name?.trim()) {
+      issues.push(`第 ${index + 1} 条路由规则缺少 name`);
+    }
+    if (!rule.cluster?.trim()) {
+      issues.push(`路由规则 ${label} 缺少目标 cluster`);
+    } else if (!clusterNames.includes(rule.cluster.trim())) {
+      issues.push(`路由规则 ${label} 引用了不存在的集群：${rule.cluster}`);
+    }
+    const percent = rule.trafficPercent ?? 100;
+    if (percent < 0 || percent > 100) {
+      issues.push(`路由规则 ${label} 的灰度百分比需在 0-100 之间`);
+    }
+    if (!rule.matchAll && !rule.namespace && !rule.keyPrefix && !rule.keyPattern && !rule.hashTag) {
+      issues.push(`路由规则 ${label} 需要设置 matchAll / namespace / keyPrefix / keyPattern / hashTag 之一`);
+    }
+    if (rule.namespace?.trim() && !namespaceNames.has(rule.namespace.trim())) {
+      issues.push(`路由规则 ${label} 引用了不存在的 namespace：${rule.namespace}`);
+    }
+  });
+
+  const seenNamespace = new Set<string>();
+  (config.governance?.namespaces || []).forEach((namespace, index) => {
+    const label = namespace.name?.trim() || `namespace-${index + 1}`;
+    if (!namespace.name?.trim()) {
+      issues.push(`第 ${index + 1} 个 namespace 缺少 name`);
+    } else if (seenNamespace.has(namespace.name.trim())) {
+      issues.push(`namespace 重复：${namespace.name.trim()}`);
+    } else {
+      seenNamespace.add(namespace.name.trim());
+    }
+    if (!namespace.token?.trim()) {
+      issues.push(`namespace ${label} 的 token 必填`);
+    }
+    (namespace.keyRules || []).forEach((rule, ruleIndex) => {
+      if (!rule.keyPrefix?.trim() && !rule.hashTag?.trim()) {
+        issues.push(`namespace ${label} 第 ${ruleIndex + 1} 条 key rule 需要设置 keyPrefix 或 hashTag`);
+      }
+    });
+  });
+
+  (config.proxyGroups || []).forEach((group, index) => {
+    const label = group.name?.trim() || `group-${index + 1}`;
+    const enabled = (group.enabledClusters || []).filter(Boolean) as string[];
+    enabled.forEach((cluster) => {
+      if (!clusterNames.includes(cluster)) {
+        issues.push(`分组 ${label} 的 enabledClusters 引用了不存在的集群：${cluster}`);
+      }
+    });
+    const groupDefault = group.routing?.defaultCluster?.trim();
+    if (groupDefault && !enabled.includes(groupDefault)) {
+      issues.push(`分组 ${label} 的 defaultCluster 必须在 enabledClusters 内`);
+    }
+    (group.routing?.rules || []).forEach((rule) => {
+      if (rule.cluster && !enabled.includes(rule.cluster)) {
+        issues.push(`分组 ${label} 规则 ${rule.name || ''} 的 cluster 必须在 enabledClusters 内`);
+      }
+    });
+  });
+
+  return issues;
+}
+
+function openPublishReview() {
+  publishReviewVisible.value = true;
+}
+
+async function confirmPublish() {
+  if (publishIssues.value.length) {
+    ElMessage.warning('请先修复校验问题再发布');
+    return;
+  }
+  if (!publishHasChanges.value) {
+    ElMessage.info('草稿与当前生效配置无差异，无需发布');
+    return;
+  }
+  publishing.value = true;
+  try {
+    await api.config.publish(clone(draft.value), operator.value, reason.value || 'frontend-publish');
+    publishReviewVisible.value = false;
+    ElMessage.info('配置已发布，正在等待数据面收敛');
+    await load();
+    await waitForConvergence();
+    activeTab.value = 'current';
+  } catch (error) {
+    ElMessage.error(`发布失败：${errorMessage(error)}`);
+  } finally {
+    publishing.value = false;
+  }
 }
 
 async function waitForConvergence() {
@@ -209,14 +344,22 @@ async function waitForConvergence() {
 }
 
 async function rollback(version: ConfigVersion) {
-  await ElMessageBox.confirm(
-    `将基于版本 ${version.versionId} 生成更大的 routeEpoch，不会降低数据面当前 epoch。`,
-    '确认回滚',
-    { type: 'warning' }
-  );
-  await api.config.rollback({ versionId: version.versionId, operator: operator.value, reason: reason.value || `rollback-to-${version.versionId}` });
-  ElMessage.success('回滚版本已发布');
-  await load();
+  try {
+    await ElMessageBox.confirm(
+      `将基于版本 ${version.versionId} 生成更大的 routeEpoch，不会降低数据面当前 epoch。`,
+      '确认回滚',
+      { type: 'warning' }
+    );
+  } catch {
+    return;
+  }
+  try {
+    await api.config.rollback({ versionId: version.versionId, operator: operator.value, reason: reason.value || `rollback-to-${version.versionId}` });
+    ElMessage.success('回滚版本已发布');
+    await load();
+  } catch (error) {
+    ElMessage.error(`回滚失败：${errorMessage(error)}`);
+  }
 }
 
 async function previewDiff() {
@@ -387,11 +530,11 @@ onMounted(load);
         <template v-if="isEditing">
           <el-button @click="cancelEdit">取消编辑</el-button>
           <el-button :icon="RefreshLeft" @click="resetEditor">重置为当前配置</el-button>
-          <el-button type="primary" :icon="Check" :loading="waitingConvergence" @click="publish">发布</el-button>
+          <el-button type="primary" :icon="Check" :loading="publishing || waitingConvergence" @click="openPublishReview">审阅并发布</el-button>
         </template>
         <template v-else>
-          <el-button @click="startStructuredEdit">进入结构化编辑</el-button>
-          <el-button type="primary" @click="startJsonEdit">进入高级 JSON 编辑</el-button>
+          <el-button type="primary" @click="startStructuredEdit">进入结构化编辑</el-button>
+          <el-button @click="startJsonEdit">高级 JSON 编辑</el-button>
         </template>
       </div>
     </div>
@@ -478,7 +621,7 @@ onMounted(load);
               <el-button @click="yamlDrawerVisible = true">YAML 预览</el-button>
             </div>
             <div class="panel-body config-form-scroll">
-              <el-collapse :model-value="['basic', 'clusters', 'proxyGroups', 'rules', 'limits', 'governance']">
+              <el-collapse v-model="activeCollapse">
                 <el-collapse-item title="基础与路由入口" name="basic">
                   <el-form label-width="170px">
                     <el-form-item label="server.listen"><el-input v-model="draft.server.listen" /></el-form-item>
@@ -506,7 +649,7 @@ onMounted(load);
                   <div v-for="(cluster, index) in draft.backends.clusters" :key="index" class="nested-card">
                     <div class="nested-card-title">
                       <strong>{{ cluster.name || `cluster-${index + 1}` }}</strong>
-                      <el-button size="small" type="danger" :icon="Delete" @click="removeAt(draft.backends.clusters, index)" />
+                      <el-button size="small" type="danger" :icon="Delete" aria-label="删除集群" title="删除集群" @click="removeAt(draft.backends.clusters, index)" />
                     </div>
                     <el-form label-width="140px">
                       <el-form-item label="name"><el-input v-model="cluster.name" /></el-form-item>
@@ -531,7 +674,7 @@ onMounted(load);
                   <div v-for="(group, groupIndex) in draft.proxyGroups" :key="groupIndex" class="nested-card">
                     <div class="nested-card-title">
                       <strong>{{ group.name || `group-${groupIndex + 1}` }}</strong>
-                      <el-button size="small" type="danger" :icon="Delete" @click="removeAt(draft.proxyGroups, groupIndex)" />
+                      <el-button size="small" type="danger" :icon="Delete" aria-label="删除分组" title="删除分组" @click="removeAt(draft.proxyGroups, groupIndex)" />
                     </div>
                     <el-form label-width="150px">
                       <el-form-item label="group name"><el-input v-model="group.name" /></el-form-item>
@@ -572,7 +715,7 @@ onMounted(load);
                       <el-table-column label="hashTag" width="120"><template #default="{ row }"><el-input v-model="row.hashTag" /></template></el-table-column>
                       <el-table-column label="matchAll" width="100"><template #default="{ row }"><el-switch v-model="row.matchAll" /></template></el-table-column>
                       <el-table-column label="%" width="110"><template #default="{ row }"><el-input-number v-model="row.trafficPercent" :min="0" :max="100" /></template></el-table-column>
-                      <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" @click="removeAt(group.routing!.rules!, $index)" /></template></el-table-column>
+                      <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" aria-label="删除组内规则" title="删除组内规则" @click="removeAt(group.routing!.rules!, $index)" /></template></el-table-column>
                     </el-table>
                   </div>
                 </el-collapse-item>
@@ -588,7 +731,7 @@ onMounted(load);
                     <el-table-column label="hashTag" width="120"><template #default="{ row }"><el-input v-model="row.hashTag" /></template></el-table-column>
                     <el-table-column label="matchAll" width="100"><template #default="{ row }"><el-switch v-model="row.matchAll" /></template></el-table-column>
                     <el-table-column label="%" width="110"><template #default="{ row }"><el-input-number v-model="row.trafficPercent" :min="0" :max="100" /></template></el-table-column>
-                    <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" @click="removeAt(draft.routing.rules, $index)" /></template></el-table-column>
+                    <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" aria-label="删除路由规则" title="删除路由规则" @click="removeAt(draft.routing.rules, $index)" /></template></el-table-column>
                   </el-table>
                 </el-collapse-item>
 
@@ -624,7 +767,7 @@ onMounted(load);
                   <div v-for="(namespace, nsIndex) in draft.governance.namespaces" :key="nsIndex" class="nested-card">
                     <div class="nested-card-title">
                       <strong>{{ namespace.name || `namespace-${nsIndex + 1}` }}</strong>
-                      <el-button size="small" type="danger" :icon="Delete" @click="removeAt(draft.governance.namespaces, nsIndex)" />
+                      <el-button size="small" type="danger" :icon="Delete" aria-label="删除 namespace" title="删除 namespace" @click="removeAt(draft.governance.namespaces, nsIndex)" />
                     </div>
                     <el-form label-width="150px">
                       <el-form-item label="name"><el-input v-model="namespace.name" /></el-form-item>
@@ -651,7 +794,7 @@ onMounted(load);
                       <el-table-column label="hashTag" width="130"><template #default="{ row }"><el-input v-model="row.hashTag" /></template></el-table-column>
                       <el-table-column label="disabled" width="100"><template #default="{ row }"><el-switch v-model="row.disabled" /></template></el-table-column>
                       <el-table-column label="maxQps" width="120"><template #default="{ row }"><el-input-number v-model="row.maxQps" :min="0" /></template></el-table-column>
-                      <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" @click="removeKeyRule(namespace, $index)" /></template></el-table-column>
+                      <el-table-column label="操作" width="80"><template #default="{ $index }"><el-button size="small" type="danger" :icon="Delete" aria-label="删除 key rule" title="删除 key rule" @click="removeKeyRule(namespace, $index)" /></template></el-table-column>
                     </el-table>
                   </div>
                 </el-collapse-item>
@@ -833,6 +976,75 @@ onMounted(load);
         </div>
       </div>
       <pre class="code-block version-config-viewer">{{ viewedVersionText }}</pre>
+    </el-dialog>
+
+    <el-dialog v-model="publishReviewVisible" class="diff-dialog" width="80vw" top="6vh" append-to-body>
+      <template #header>
+        <div class="dialog-title">
+          <strong>审阅并发布配置</strong>
+          <span>发布 routeEpoch={{ draft.routing.routeEpoch ?? '-' }}，数据面会按更大 epoch 接受快照；token/password 已掩码。</span>
+        </div>
+      </template>
+
+      <el-alert
+        v-if="publishIssues.length"
+        type="error"
+        show-icon
+        :closable="false"
+        :title="`发布前需要修复 ${publishIssues.length} 个问题`"
+        class="section"
+      >
+        <ul class="publish-issue-list">
+          <li v-for="(issue, index) in publishIssues" :key="index">{{ issue }}</li>
+        </ul>
+      </el-alert>
+      <el-alert
+        v-else-if="!publishHasChanges"
+        type="info"
+        show-icon
+        :closable="false"
+        title="草稿与当前生效配置无差异，无需发布"
+        class="section"
+      />
+
+      <section class="diff-workbench">
+        <div class="diff-summary">
+          <div>
+            <h3>相对当前生效配置的变更</h3>
+            <p class="subtle">绿色为新增行，红色为移除行。</p>
+          </div>
+          <div class="diff-stats">
+            <span class="diff-stat add">+{{ publishDiff.stats.added }}</span>
+            <span class="diff-stat remove">-{{ publishDiff.stats.removed }}</span>
+          </div>
+        </div>
+        <div class="diff-viewer">
+          <div
+            v-for="(line, index) in publishDiff.lines"
+            :key="`publish-${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`"
+            class="diff-line"
+            :class="`is-${line.kind}`"
+          >
+            <span class="diff-line-no">{{ line.oldLine || '' }}</span>
+            <span class="diff-line-no">{{ line.newLine || '' }}</span>
+            <span class="diff-marker">{{ line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' ' }}</span>
+            <code>{{ line.text || ' ' }}</code>
+          </div>
+        </div>
+      </section>
+
+      <template #footer>
+        <el-button @click="publishReviewVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :icon="Check"
+          :loading="publishing"
+          :disabled="publishIssues.length > 0 || !publishHasChanges"
+          @click="confirmPublish"
+        >
+          确认发布
+        </el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
