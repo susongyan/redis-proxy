@@ -4,8 +4,10 @@ import {
   Files,
   Guide,
   Histogram,
+  Moon,
   Operation,
   SetUp,
+  Sunny,
   Switch
 } from '@element-plus/icons-vue';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
@@ -21,6 +23,8 @@ const title = computed(() => String(route.meta.title || 'Redis Proxy Control Pla
 const viteEnv = (import.meta as unknown as { env?: Record<string, string> }).env || {};
 const appEnv = viteEnv.VITE_APP_ENV || viteEnv.MODE || 'local';
 const controlPlaneOk = ref(false);
+const themeMode = ref<'dark' | 'light'>('dark');
+const isLightTheme = computed(() => themeMode.value === 'light');
 let topbarTimer: number | undefined;
 
 const navItems = [
@@ -46,7 +50,22 @@ function goToConvergence() {
   router.push({ path: '/routing', query: { tab: 'instances' } });
 }
 
+function applyTheme(theme: 'dark' | 'light') {
+  document.documentElement.dataset.rpTheme = theme;
+}
+
+function toggleTheme() {
+  themeMode.value = isLightTheme.value ? 'dark' : 'light';
+  window.localStorage.setItem('redis-proxy-theme', themeMode.value);
+  applyTheme(themeMode.value);
+}
+
 onMounted(() => {
+  const savedTheme = window.localStorage.getItem('redis-proxy-theme');
+  if (savedTheme === 'light' || savedTheme === 'dark') {
+    themeMode.value = savedTheme;
+  }
+  applyTheme(themeMode.value);
   refreshTopbarStatus();
   topbarTimer = window.setInterval(() => {
     refreshTopbarStatus();
@@ -61,7 +80,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <el-container class="app-shell">
+  <el-container class="app-shell" :class="isLightTheme ? 'theme-light' : 'theme-dark'">
     <el-aside class="sidebar" width="236px">
       <div class="brand">
         <div class="brand-mark">RP</div>
@@ -90,6 +109,15 @@ onUnmounted(() => {
         </div>
         <div class="topbar-actions">
           <span class="ops-pill">ENV {{ appEnv }}</span>
+          <button
+            class="theme-toggle-button"
+            type="button"
+            :title="isLightTheme ? '切换到暗色主题' : '切换到浅色主题'"
+            :aria-label="isLightTheme ? '切换到暗色主题' : '切换到浅色主题'"
+            @click="toggleTheme"
+          >
+            <el-icon><component :is="isLightTheme ? Sunny : Moon" /></el-icon>
+          </button>
           <StatusTag :label="controlPlaneOk ? 'CP OK' : 'CP ERROR'" :type="controlPlaneOk ? 'success' : 'danger'" />
           <button class="topbar-status-button" type="button" @click="goToConvergence">
             <StatusTag :label="store.convergence?.status || 'UNKNOWN'" :type="convergenceTone(store.convergence?.status)" />
