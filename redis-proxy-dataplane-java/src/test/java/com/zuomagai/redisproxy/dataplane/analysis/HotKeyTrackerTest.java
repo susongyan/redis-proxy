@@ -91,6 +91,44 @@ class HotKeyTrackerTest {
     }
 
     @Test
+    void refreshMetricsPrunesExpiredKeysAndFreesCapacity() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        HotKeyTracker tracker = new HotKeyTracker(registry);
+        tracker.setMaxTracked(1);
+        tracker.setWindow(60_000, 1_000);
+        ClockHolder clock = new ClockHolder(1_000);
+        tracker.setClock(clock);
+
+        tracker.observe("app-a", request("GET", "key-1"));
+        assertThat(tracker.refreshMetrics()).isTrue();
+        assertThat(registry.get("redis.proxy.hot.key.topk.count").tag("key", "key-1").gauge().value()).isEqualTo(1.0);
+
+        clock.setMillis(62_000);
+        assertThat(tracker.refreshMetrics()).isFalse();
+        assertThat(registry.get("redis.proxy.hot.key.tracked.keys").gauge().value()).isEqualTo(0.0);
+        assertThat(registry.find("redis.proxy.hot.key.topk.count").gauge()).isNull();
+
+        tracker.observe("app-a", request("GET", "key-2"));
+        assertThat(tracker.snapshot(10))
+                .extracting(HotKeyTracker.Entry::key)
+                .containsExactly("key-2");
+        assertThat(registry.find("redis.proxy.hot.key.dropped").counter()).isNull();
+    }
+
+    @Test
+    void observeAfterStopDoesNotThrow() {
+        HotKeyTracker tracker = new HotKeyTracker(new SimpleMeterRegistry());
+        tracker.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
+        tracker.stop();
+
+        tracker.observe("app-a", request("GET", "key-1"));
+
+        assertThat(tracker.snapshot(1))
+                .extracting(HotKeyTracker.Entry::key, HotKeyTracker.Entry::count)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("key-1", 1L));
+    }
+
+    @Test
     void observesSameKeyConcurrentlyWithoutLosingCounts() throws Exception {
         HotKeyTracker tracker = new HotKeyTracker(new SimpleMeterRegistry());
         tracker.setClock(Clock.fixed(Instant.ofEpochMilli(1_000), ZoneOffset.UTC));
