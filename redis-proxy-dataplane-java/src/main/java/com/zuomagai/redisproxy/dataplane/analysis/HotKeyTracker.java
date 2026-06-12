@@ -4,6 +4,7 @@ import com.zuomagai.redisproxy.dataplane.config.ProxyProperties;
 import com.zuomagai.redisproxy.dataplane.governance.GovernancePolicy;
 import com.zuomagai.redisproxy.dataplane.protocol.ArgRef;
 import com.zuomagai.redisproxy.dataplane.protocol.RespRequest;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -13,8 +14,10 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -29,14 +32,17 @@ public class HotKeyTracker {
     private static final int DEFAULT_METRICS_TOP_N = 20;
     private static final long DEFAULT_WINDOW_MILLIS = 60_000;
     private static final long DEFAULT_BUCKET_MILLIS = 1_000;
+    private static final long REFRESH_INTERVAL_MILLIS = 1_000;
 
     private final MeterRegistry registry;
     private final Map<KeyId, Window> counts = new ConcurrentHashMap<>();
+    private final Map<CounterKey, Counter> observedCounters = new ConcurrentHashMap<>();
+    private final Map<CounterKey, Counter> droppedCounters = new ConcurrentHashMap<>();
     private final AtomicReference<List<Meter>> topMeters = new AtomicReference<>(List.of());
     private final AtomicInteger trackedKeys = new AtomicInteger();
     private final AtomicLong lastRefreshMillis = new AtomicLong();
     private final AtomicBoolean refreshScheduled = new AtomicBoolean();
-    private final ExecutorService refreshExecutor = Executors.newSingleThreadExecutor(runnable -> {
+    private final ScheduledExecutorService refreshExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
         Thread thread = new Thread(runnable, "hot-key-topk-refresh");
         thread.setDaemon(true);
         return thread;
@@ -87,7 +93,7 @@ public class HotKeyTracker {
                 continue;
             }
             window.increment(nowMillis);
-            registry.counter("redis.proxy.hot.key.observed", "namespace", namespace, "command", command).increment();
+            observedCounter(namespace, command).increment();
         }
         scheduleRefresh(nowMillis);
     }
@@ -101,8 +107,7 @@ public class HotKeyTracker {
             return List.of();
         }
         prune(clock.millis(), cfg);
-        trackedKeys.set(counts.size());
-        return top(limit, cfg);
+        return top(limit);
     }
 
     void setClock(Clock clock) {
@@ -166,7 +171,7 @@ public class HotKeyTracker {
         while (true) {
             int current = trackedKeys.get();
             if (current >= maxTracked) {
-                registry.counter("redis.proxy.hot.key.dropped", "namespace", namespace, "command", command).increment();
+                droppedCounter(namespace, command).increment();
                 return false;
             }
             if (trackedKeys.compareAndSet(current, current + 1)) {
@@ -175,26 +180,54 @@ public class HotKeyTracker {
         }
     }
 
-    private void scheduleRefresh(long nowMillis) {
-        long previous = lastRefreshMillis.get();
-        if (previous != 0 && nowMillis - previous < 1000) {
-            return;
-        }
-        if (!lastRefreshMillis.compareAndSet(previous, nowMillis) || !refreshScheduled.compareAndSet(false, true)) {
-            return;
-        }
-        refreshExecutor.execute(() -> {
-            try {
-                refreshMetrics();
-            } finally {
-                refreshScheduled.set(false);
-            }
-        });
+    private Counter observedCounter(String namespace, String command) {
+        return observedCounters.computeIfAbsent(new CounterKey(namespace, command),
+                id -> registry.counter("redis.proxy.hot.key.observed", "namespace", id.namespace(), "command", id.command()));
     }
 
-    synchronized void refreshMetrics() {
+    private Counter droppedCounter(String namespace, String command) {
+        return droppedCounters.computeIfAbsent(new CounterKey(namespace, command),
+                id -> registry.counter("redis.proxy.hot.key.dropped", "namespace", id.namespace(), "command", id.command()));
+    }
+
+    private void scheduleRefresh(long nowMillis) {
+        long previous = lastRefreshMillis.get();
+        if (previous != 0 && nowMillis - previous < REFRESH_INTERVAL_MILLIS) {
+            return;
+        }
+        if (!lastRefreshMillis.compareAndSet(previous, nowMillis)) {
+            return;
+        }
+        trigger(0);
+    }
+
+    private void trigger(long delayMillis) {
+        if (!refreshScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            refreshExecutor.schedule(this::runRefresh, delayMillis, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException shuttingDown) {
+            refreshScheduled.set(false);
+        }
+    }
+
+    private void runRefresh() {
+        boolean reschedule = false;
+        try {
+            reschedule = refreshMetrics();
+        } finally {
+            refreshScheduled.set(false);
+        }
+        if (reschedule) {
+            trigger(REFRESH_INTERVAL_MILLIS);
+        }
+    }
+
+    synchronized boolean refreshMetrics() {
         TrackerConfig cfg = config;
-        List<Entry> top = top(cfg.metricsTopN(), cfg);
+        prune(clock.millis(), cfg);
+        List<Entry> top = top(cfg.metricsTopN());
         for (Meter meter : topMeters.getAndSet(List.of())) {
             registry.remove(meter);
         }
@@ -214,9 +247,10 @@ public class HotKeyTracker {
         for (Meter meter : topMeters.getAndSet(List.copyOf(nextMeters))) {
             registry.remove(meter);
         }
+        return !counts.isEmpty();
     }
 
-    private void clear() {
+    private synchronized void clear() {
         for (Meter meter : topMeters.getAndSet(List.of())) {
             registry.remove(meter);
         }
@@ -224,7 +258,7 @@ public class HotKeyTracker {
         trackedKeys.set(0);
     }
 
-    private List<Entry> top(int limit, TrackerConfig cfg) {
+    private List<Entry> top(int limit) {
         long nowMillis = clock.millis();
         return counts.entrySet().stream()
                 .map(item -> new Entry(item.getKey().namespace(), item.getKey().command(), item.getKey().key(), item.getValue().total(nowMillis)))
@@ -238,16 +272,14 @@ public class HotKeyTracker {
     }
 
     private void prune(long nowMillis, TrackerConfig cfg) {
-        counts.entrySet().removeIf(item -> {
-            boolean remove = !item.getValue().matches(cfg) || item.getValue().total(nowMillis) == 0;
-            if (remove) {
-                trackedKeys.updateAndGet(value -> Math.max(0, value - 1));
-            }
-            return remove;
-        });
+        counts.entrySet().removeIf(item -> !item.getValue().matches(cfg) || item.getValue().total(nowMillis) == 0);
+        trackedKeys.set(counts.size());
     }
 
     private record KeyId(String namespace, String command, String key) {
+    }
+
+    private record CounterKey(String namespace, String command) {
     }
 
     public record Entry(String namespace, String command, String key, long count) {
