@@ -108,6 +108,7 @@ flowchart LR
 - [Redis Backend 异常与 Slot 刷新机制](docs/backend-resilience.md)
 - [治理与观测能力](docs/governance-and-observability.md)
 - [Pipeline 处理机制](docs/pipeline-processing.md)
+- [Redis Proxy 命令支持清单](docs/command-support.md)
 
 实验与性能：
 
